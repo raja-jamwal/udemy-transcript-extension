@@ -10,7 +10,8 @@ let recordingState = {
   errorCount: 0,
   maxErrors: 5,
   lastError: null,
-  currentSectionTitle: ''
+  currentSectionTitle: '',
+  navigationHistory: []
 };
 
 // Clear previous state on extension install/update
@@ -339,6 +340,37 @@ function processNextLecture() {
     return;
   }
   
+  // Track which lecture we're currently processing
+  if (!recordingState.navigationHistory) {
+    recordingState.navigationHistory = [];
+  }
+  
+  // Check for repeated navigation to same lecture
+  const isRepeatedNavigation = recordingState.navigationHistory.length > 5 && 
+    recordingState.navigationHistory.slice(-5).every(item => 
+      item.sectionIndex === recordingState.currentSectionIndex && 
+      item.lectureIndex === recordingState.currentLectureIndex
+    );
+  
+  if (isRepeatedNavigation) {
+    console.warn('Detected repeated navigation to the same lecture. Forcing move to next lecture.');
+    recordingState.currentLectureIndex++;
+    processNextLecture();
+    return;
+  }
+  
+  // Add to navigation history
+  recordingState.navigationHistory.push({
+    sectionIndex: recordingState.currentSectionIndex,
+    lectureIndex: recordingState.currentLectureIndex,
+    timestamp: Date.now()
+  });
+  
+  // Trim history to last 100 entries
+  if (recordingState.navigationHistory.length > 100) {
+    recordingState.navigationHistory = recordingState.navigationHistory.slice(-100);
+  }
+  
   console.log(`Processing lecture: Section ${recordingState.currentSectionIndex + 1}, Lecture ${recordingState.currentLectureIndex + 1}`);
   console.log(`Section: "${currentSection.section}", Lecture: "${currentLecture.title}"`);
   
@@ -363,16 +395,27 @@ function processNextLecture() {
         
         // Set up watchdog timer - if we don't get a response within 3 minutes, assume something went wrong
         setTimeout(() => {
-          // Check if we're still on the same lecture
-          chrome.tabs.sendMessage(recordingState.courseTab, { action: 'pingContentScript' }, (pingResponse) => {
-            if (chrome.runtime.lastError || !pingResponse) {
-              console.error('Watchdog triggered - no response from content script');
-              // Force moving to next lecture
-              recordingState.errorCount++;
-              recordingState.currentLectureIndex++;
-              processNextLecture();
-            }
-          });
+          // Only check if we're still recording and still on the same lecture
+          if (recordingState.isRecording && 
+              recordingState.currentSectionIndex === recordingState.navigationHistory[recordingState.navigationHistory.length - 1].sectionIndex &&
+              recordingState.currentLectureIndex === recordingState.navigationHistory[recordingState.navigationHistory.length - 1].lectureIndex) {
+            
+            console.log('Watchdog triggered - checking content script status');
+            
+            chrome.tabs.sendMessage(recordingState.courseTab, { action: 'pingContentScript' }, (pingResponse) => {
+              if (chrome.runtime.lastError || !pingResponse) {
+                console.error('Watchdog triggered - no response from content script');
+                // Force moving to next lecture
+                recordingState.errorCount++;
+                recordingState.currentLectureIndex++;
+                processNextLecture();
+              } else {
+                console.log('Content script responsive but taking too long, forcing move to next lecture');
+                recordingState.currentLectureIndex++;
+                processNextLecture();
+              }
+            });
+          }
         }, 180000); // 3 minutes
       } else {
         console.error('Failed to navigate to lecture:', response?.error);

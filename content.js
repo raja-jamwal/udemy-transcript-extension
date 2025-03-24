@@ -629,12 +629,38 @@ async function navigateToLecture(sectionIndex, lectureIndex) {
     // Get section and lecture info
     const sectionTitle = section.section;
     const lectureTitle = section.lectures[lectureIndex].title;
+    const lectureUrl = section.lectures[lectureIndex].url; // URL may be available in some cases
     
     console.log(`Navigating to: ${sectionTitle} > ${lectureTitle}`);
     
+    // Store current URL to detect if navigation actually occurred
+    const initialUrl = window.location.href;
+    console.log('Initial URL:', initialUrl);
+    
     // Try multiple navigation methods in order of preference
     
-    // Method 1: Try to find the lecture directly in the sidebar
+    // Method 1: Direct URL navigation if available
+    if (lectureUrl && lectureUrl.startsWith('http')) {
+      try {
+        console.log('Attempting direct URL navigation:', lectureUrl);
+        window.location.href = lectureUrl;
+        
+        // Wait for the page to load
+        await new Promise(resolve => setTimeout(resolve, 5000));
+        
+        // Check if URL actually changed
+        if (window.location.href !== initialUrl) {
+          console.log('URL navigation successful');
+          return { sectionTitle, lectureTitle };
+        } else {
+          console.log('URL didn\'t change, trying other methods');
+        }
+      } catch (err) {
+        console.warn('Error in direct URL navigation:', err);
+      }
+    }
+    
+    // Method 2: Try to find the lecture directly in the sidebar
     try {
       console.log('Attempting direct lecture navigation...');
       
@@ -650,7 +676,22 @@ async function navigateToLecture(sectionIndex, lectureIndex) {
         expandButtons[0].click();
         await new Promise(resolve => setTimeout(resolve, 2000));
       } else {
-        console.log('No "Expand All" button found for navigation');
+        // Try expanding individual sections if expand all is not available
+        const sectionHeaders = document.querySelectorAll(
+          '.ud-accordion-panel-heading, ' +
+          '[data-purpose^="section-panel-"] button, ' +
+          '[data-purpose="curriculum-section-heading"]'
+        );
+        console.log(`Found ${sectionHeaders.length} section headers to expand`);
+        
+        for (const header of sectionHeaders) {
+          const isExpanded = header.getAttribute('aria-expanded') === 'true';
+          if (!isExpanded) {
+            console.log('Expanding section:', header.innerText);
+            header.click();
+            await new Promise(resolve => setTimeout(resolve, 500));
+          }
+        }
       }
       
       // Try to find the exact lecture by title
@@ -686,12 +727,30 @@ async function navigateToLecture(sectionIndex, lectureIndex) {
         if (playButton) {
           playButton.click();
           await new Promise(resolve => setTimeout(resolve, 5000));
-          return { sectionTitle, lectureTitle };
+          
+          // Verify navigation occurred by checking URL or title
+          if (window.location.href !== initialUrl) {
+            console.log('Navigation successful - URL changed');
+            return { sectionTitle, lectureTitle };
+          }
+          
+          const currentPageTitle = document.querySelector('.ud-heading-xxl[data-purpose="lecture-title"]')?.innerText?.trim();
+          if (currentPageTitle && (currentPageTitle === lectureTitle || lectureTitle.includes(currentPageTitle))) {
+            console.log('Navigation successful - title matches');
+            return { sectionTitle, lectureTitle };
+          }
+          
+          console.log('Navigation might have failed - continuing with other methods');
         } else {
           console.log('No play button found, trying to click the lecture element itself');
           lectureElement.click();
           await new Promise(resolve => setTimeout(resolve, 5000));
-          return { sectionTitle, lectureTitle };
+          
+          // Verify navigation
+          if (window.location.href !== initialUrl) {
+            console.log('Navigation successful - URL changed');
+            return { sectionTitle, lectureTitle };
+          }
         }
       }
       
@@ -700,20 +759,70 @@ async function navigateToLecture(sectionIndex, lectureIndex) {
       console.warn('Error in direct lecture navigation:', err);
     }
     
-    // Method 2: Try using URL navigation
+    // Method 3: Sequential navigation using next button
     try {
-      console.log('Attempting URL-based navigation...');
+      console.log('Attempting sequential navigation...');
       
       // First check if we're already on a lecture page
       const currentUrl = window.location.href;
       console.log('Current URL:', currentUrl);
       
-      // Get current lecture ID if present in URL
-      const lectureMatch = currentUrl.match(/\/lecture\/(\d+)/);
-      if (lectureMatch) {
-        console.log('Currently on a lecture page');
+      // Determine if we need to navigate to the course page first
+      if (!currentUrl.includes('/course/') && !currentUrl.includes('/learn/')) {
+        // Try to find a link to the course and click it
+        console.log('Not on a course page, trying to find course link...');
+        return { sectionTitle, lectureTitle };
+      }
+      
+      // If we're on a course landing page, try to find "Start course" or similar buttons
+      if (currentUrl.includes('/course/') && !currentUrl.includes('/learn/') && !currentUrl.includes('/lecture/')) {
+        console.log('On course landing page, looking for start button...');
         
-        // Try to find next button and click it for sequential navigation
+        const startButtons = document.querySelectorAll(
+          '[data-purpose="start-course-button"], ' +
+          'a[href*="learn"], ' +
+          'button:contains("Start"), ' +
+          'a:contains("Start course")'
+        );
+        
+        if (startButtons && startButtons.length > 0) {
+          console.log('Found start button, clicking...');
+          startButtons[0].click();
+          await new Promise(resolve => setTimeout(resolve, 5000));
+        }
+      }
+      
+      // Find and click the next button repeatedly until we reach desired lecture
+      // We'll use a combination of section progression and checking lecture titles
+      let navAttempts = 0;
+      const MAX_NAV_ATTEMPTS = 50; // More generous limit
+      let currentSectionText = '';
+      let currentLectureText = '';
+      
+      while (navAttempts < MAX_NAV_ATTEMPTS) {
+        // Get current section and lecture titles
+        currentSectionText = document.querySelector(
+          '.ud-heading-sm[data-purpose="section-title"], ' +
+          '[data-purpose="curriculum-section-title"]'
+        )?.innerText?.trim() || '';
+        
+        currentLectureText = document.querySelector(
+          '.ud-heading-xxl[data-purpose="lecture-title"], ' +
+          '[data-purpose="curriculum-item-title"]'
+        )?.innerText?.trim() || '';
+        
+        console.log(`Current position: Section "${currentSectionText}" > Lecture "${currentLectureText}"`);
+        
+        // Check if we've reached the target
+        const sectionMatches = currentSectionText === sectionTitle || sectionTitle.includes(currentSectionText);
+        const lectureMatches = currentLectureText === lectureTitle || lectureTitle.includes(currentLectureText);
+        
+        if (sectionMatches && lectureMatches) {
+          console.log('Found target lecture!');
+          return { sectionTitle, lectureTitle: currentLectureText || lectureTitle };
+        }
+        
+        // Find next button
         const nextButton = document.querySelector(
           '[data-purpose="go-to-next-lesson"], ' +
           'button[aria-label*="Next"], ' +
@@ -721,85 +830,47 @@ async function navigateToLecture(sectionIndex, lectureIndex) {
           'a[data-purpose="next-lesson"]'
         );
         
-        if (nextButton) {
-          console.log('Found next button, clicking it...');
-          nextButton.click();
-          await new Promise(resolve => setTimeout(resolve, 5000));
-          
-          // Check if we navigated correctly
-          const newTitle = document.querySelector('.ud-heading-xxl[data-purpose="lecture-title"]')?.innerText.trim();
-          console.log('New lecture title:', newTitle);
-          
-          return { sectionTitle, lectureTitle: newTitle || lectureTitle };
-        }
-      }
-      
-      // Try to navigate to a lecture URL pattern
-      console.log('Attempting to find lecture URL from sidebar...');
-      const lectureLinks = Array.from(document.querySelectorAll('a[href*="lecture"]'));
-      
-      if (lectureLinks.length > 0) {
-        console.log(`Found ${lectureLinks.length} lecture links`);
-        
-        // Try to find by section and lecture indices
-        const sectionElements = document.querySelectorAll(
-          '[data-purpose^="section-panel-"], .ud-accordion-panel, [data-purpose="curriculum-section"]'
-        );
-        
-        if (sectionElements && sectionElements.length > sectionIndex) {
-          console.log('Found sections in sidebar');
-          const sectionLectureLinks = Array.from(
-            sectionElements[sectionIndex].querySelectorAll('a[href*="lecture"]')
-          );
-          
-          if (sectionLectureLinks && sectionLectureLinks.length > lectureIndex) {
-            console.log('Found target lecture link by index, clicking...');
-            sectionLectureLinks[lectureIndex].click();
-            await new Promise(resolve => setTimeout(resolve, 5000));
-            return { sectionTitle, lectureTitle };
-          }
+        if (!nextButton) {
+          console.warn('No next button found, navigation failed');
+          break;
         }
         
-        // Fallback: Try to find by title approximate match
-        for (const link of lectureLinks) {
-          if (link.textContent.includes(lectureTitle) || 
-              lectureTitle.includes(link.textContent.trim())) {
-            console.log('Found lecture link by title match, clicking...');
-            link.click();
-            await new Promise(resolve => setTimeout(resolve, 5000));
-            return { sectionTitle, lectureTitle };
-          }
-        }
+        // Store current URL to detect if navigation actually happens
+        const beforeClickUrl = window.location.href;
         
-        // Last resort: click the first lecture link as a starting point
-        console.log('Navigation methods failed, clicking first lecture link as fallback...');
-        lectureLinks[0].click();
-        await new Promise(resolve => setTimeout(resolve, 5000));
+        // Click next
+        console.log(`Sequential navigation attempt ${navAttempts + 1}...`);
+        nextButton.click();
         
-        // Try to use next buttons to navigate forward
-        for (let i = 0; i < sectionIndex * 100 + lectureIndex; i++) {
-          const nextButton = document.querySelector(
-            '[data-purpose="go-to-next-lesson"], ' +
-            'button[aria-label*="Next"], ' +
-            '[class*="btn--next"], ' +
-            'a[data-purpose="next-lesson"]'
-          );
-          
-          if (!nextButton) break;
-          
-          console.log(`Sequential navigation step ${i + 1}...`);
-          nextButton.click();
+        // Wait for navigation
+        await new Promise(resolve => setTimeout(resolve, 4000));
+        
+        // Check if URL changed - if not, we might be stuck
+        if (window.location.href === beforeClickUrl) {
+          console.log('URL did not change after clicking next, waiting longer...');
           await new Promise(resolve => setTimeout(resolve, 3000));
+          
+          // Check again
+          if (window.location.href === beforeClickUrl) {
+            console.warn('Navigation may be stuck, trying alternative method');
+            break;
+          }
         }
         
-        // Check where we ended up
-        const newTitle = document.querySelector('.ud-heading-xxl[data-purpose="lecture-title"]')?.innerText.trim();
-        console.log('Final lecture title after sequential navigation:', newTitle);
-        
-        return { sectionTitle, lectureTitle: newTitle || lectureTitle };
+        navAttempts++;
       }
+      
+      if (navAttempts >= MAX_NAV_ATTEMPTS) {
+        console.warn('Reached maximum navigation attempts without finding target lecture');
+      }
+      
+      // Return the titles of where we ended up
+      return { 
+        sectionTitle: currentSectionText || sectionTitle, 
+        lectureTitle: currentLectureText || lectureTitle 
+      };
     } catch (err) {
-      console.warn('Error in URL-based navigation:', err);
+      console.warn('Error in sequential navigation:', err);
     }
     
     // If all our methods fail, return the expected titles but log an error
@@ -822,12 +893,54 @@ async function extractTranscript() {
     || currentProgress.currentLecture 
     || 'Unknown Lecture';
   
+  console.log(`Extracting transcript for: ${sectionTitle} > ${lectureTitle}`);
+  
   try {
+    // Check if this is a video lecture that might have transcripts
+    const videoPlayer = document.querySelector('video, [data-purpose="video-container"], [data-purpose="video-player"]');
+    if (!videoPlayer) {
+      console.log('No video player found - this may not be a video lecture');
+      return { 
+        sectionTitle, 
+        lectureTitle, 
+        transcript: ['[This lecture does not contain a video with transcript]'] 
+      };
+    }
+    
+    // Check if transcript button exists before trying to open panel
+    const transcriptButtonExists = !!document.querySelector('button[data-purpose="transcript-toggle"]');
+    if (!transcriptButtonExists) {
+      console.log('No transcript button found - this lecture likely has no transcript');
+      return { 
+        sectionTitle, 
+        lectureTitle, 
+        transcript: ['[No transcript available for this lecture]'] 
+      };
+    }
+    
     // Open the transcript panel if it's not already open
-    await openTranscriptPanel();
+    try {
+      await openTranscriptPanel();
+    } catch (error) {
+      console.warn('Could not open transcript panel:', error.message);
+      return { 
+        sectionTitle, 
+        lectureTitle, 
+        transcript: [`[Could not open transcript panel: ${error.message}]`] 
+      };
+    }
     
     // Wait for transcript content to be available
-    await waitForElement('[data-purpose="cue-text"]', 15000);
+    try {
+      await waitForElement('[data-purpose="cue-text"]', 10000);
+    } catch (error) {
+      console.warn('No transcript elements found after opening panel:', error.message);
+      return { 
+        sectionTitle, 
+        lectureTitle, 
+        transcript: ['[No transcript content found]'] 
+      };
+    }
     
     // Extract the transcript text
     const transcriptElements = document.querySelectorAll('[data-purpose="cue-text"]');
@@ -841,6 +954,7 @@ async function extractTranscript() {
     }
     
     const transcript = Array.from(transcriptElements).map(el => el.innerText.trim());
+    console.log(`Successfully extracted ${transcript.length} transcript lines`);
     
     // Return the transcript data
     return { sectionTitle, lectureTitle, transcript };
@@ -866,10 +980,21 @@ async function openTranscriptPanel() {
     
     if (!isExpanded) {
       // Click to expand
+      console.log('Expanding transcript panel');
       transcriptButton.click();
       
       // Wait for the panel to open
       await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      // Double-check that it opened
+      const nowExpanded = transcriptButton.getAttribute('aria-expanded') === 'true';
+      if (!nowExpanded) {
+        console.warn('Transcript panel did not expand after clicking - trying again');
+        transcriptButton.click();
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+    } else {
+      console.log('Transcript panel already expanded');
     }
   } catch (error) {
     // If transcript button isn't found, the video might not have a transcript
