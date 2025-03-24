@@ -34,6 +34,9 @@ document.addEventListener('DOMContentLoaded', function() {
         const sectionIndex = response.currentSectionIndex + 1;
         const lectureIndex = response.currentLectureIndex + 1;
         showStatus(`Recording in progress (Section ${sectionIndex}, Lecture ${lectureIndex})`, 'info');
+        
+        // Start health check if recording is in progress
+        startHealthCheck();
       } else {
         startRecordingBtn.classList.remove('hidden');
         stopRecordingBtn.classList.add('hidden');
@@ -178,6 +181,106 @@ document.addEventListener('DOMContentLoaded', function() {
     }
   });
 
+  // Health check to monitor recording progress
+  let healthCheckInterval = null;
+  let lastSection = -1;
+  let lastLecture = -1;
+  let stuckCounter = 0;
+
+  function startHealthCheck() {
+    // Clear any existing interval
+    if (healthCheckInterval) {
+      clearInterval(healthCheckInterval);
+    }
+    
+    // Initialize the last known position
+    chrome.runtime.sendMessage({action: 'getRecordingStatus'}, function(response) {
+      if (response && response.isRecording) {
+        lastSection = response.currentSectionIndex;
+        lastLecture = response.currentLectureIndex;
+        console.log(`Health check initialized at Section ${lastSection + 1}, Lecture ${lastLecture + 1}`);
+      }
+    });
+    
+    // Start periodic health check
+    healthCheckInterval = setInterval(() => {
+      chrome.runtime.sendMessage({action: 'getRecordingStatus'}, function(response) {
+        if (!response || !response.isRecording) {
+          // Recording has stopped, clear interval
+          clearInterval(healthCheckInterval);
+          healthCheckInterval = null;
+          return;
+        }
+        
+        // Check if we've moved since last check
+        if (response.currentSectionIndex === lastSection && 
+            response.currentLectureIndex === lastLecture) {
+          stuckCounter++;
+          console.log(`Possible stuck recording detected. Counter: ${stuckCounter}`);
+          
+          // If stuck for too long (3 checks), try to recover
+          if (stuckCounter >= 3) {
+            console.log('Recording appears stuck, attempting recovery');
+            attemptRecovery();
+          }
+        } else {
+          // Progress has been made, reset counter
+          stuckCounter = 0;
+          lastSection = response.currentSectionIndex;
+          lastLecture = response.currentLectureIndex;
+          console.log(`Recording progressing normally. Now at Section ${lastSection + 1}, Lecture ${lastLecture + 1}`);
+        }
+      });
+    }, 60000); // Check every minute
+  }
+
+  function attemptRecovery() {
+    // First check if content script is responsive
+    chrome.runtime.sendMessage({action: 'checkRecordingHealth'}, function(response) {
+      if (!response || !response.healthy) {
+        console.log('Health check failed, forcing next lecture');
+        
+        // Force moving to next lecture as recovery measure
+        chrome.runtime.sendMessage({action: 'forceNextLecture'}, function(result) {
+          if (result && result.success) {
+            console.log('Recovery attempt successful, forcing next lecture');
+            updateDebugInfo('Recovery: Forced moving to next lecture after stuck detection');
+            stuckCounter = 0;
+          } else if (result && result.stopped) {
+            console.log('Recording stopped due to too many errors');
+            updateDebugInfo('Recording stopped due to too many errors during recovery');
+            clearInterval(healthCheckInterval);
+            healthCheckInterval = null;
+          } else {
+            console.log('Recovery attempt failed');
+            updateDebugInfo('Recovery attempt failed');
+          }
+        });
+      } else {
+        console.log('Content script is responsive but recording appears stuck');
+        updateDebugInfo('Content script responsive but recording appears stuck');
+      }
+    });
+  }
+
+  function updateDebugInfo(message) {
+    const debugInfo = document.getElementById('debug-info');
+    const debugContent = document.getElementById('debug-content');
+    
+    if (debugInfo && debugContent) {
+      const timestamp = new Date().toLocaleTimeString();
+      const entry = document.createElement('div');
+      entry.textContent = `${timestamp}: ${message}`;
+      debugContent.appendChild(entry);
+      debugInfo.classList.remove('hidden');
+      
+      // Limit to last 5 entries
+      while (debugContent.children.length > 5) {
+        debugContent.removeChild(debugContent.firstChild);
+      }
+    }
+  }
+
   function startRecording() {
     // Send message to the background script to start recording
     showStatus('Starting recording process...', 'info');
@@ -209,6 +312,9 @@ document.addEventListener('DOMContentLoaded', function() {
           // Update UI
           startRecordingBtn.classList.add('hidden');
           stopRecordingBtn.classList.remove('hidden');
+          
+          // Start health check
+          startHealthCheck();
           
           // Clear after 3 seconds and show main controls
           setTimeout(() => {

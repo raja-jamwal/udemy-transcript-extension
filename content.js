@@ -99,8 +99,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 sectionTitle,
                 lectureTitle,
                 transcript
+              }, (response) => {
+                // Check if message was sent successfully
+                if (chrome.runtime.lastError) {
+                  console.error('Error sending transcript:', chrome.runtime.lastError);
+                  // Force continue to next lecture after error
+                  forceNextLecture(sectionTitle, lectureTitle, 
+                    `[Error sending transcript: ${chrome.runtime.lastError.message}]`);
+                }
+                isRecordingTranscript = false;
               });
-              isRecordingTranscript = false;
             })
             .catch(error => {
               console.error('Error extracting transcript:', error);
@@ -108,12 +116,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               updateProgressPanel('Error extracting transcript, moving to next lecture...');
               
               // Continue to next lecture even if transcript extraction fails
-              chrome.runtime.sendMessage({
-                action: 'transcriptCaptured',
-                sectionTitle: currentProgress.currentSection,
-                lectureTitle: currentProgress.currentLecture,
-                transcript: [`[Could not extract transcript: ${error.message}]`]
-              });
+              forceNextLecture(currentProgress.currentSection, currentProgress.currentLecture, 
+                `[Could not extract transcript: ${error.message}]`);
             });
         }, 8000); // Increase wait time to 8 seconds for page to fully load
         
@@ -141,37 +145,35 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                       sectionTitle,
                       lectureTitle,
                       transcript
+                    }, (response) => {
+                      // Check for errors in response
+                      if (chrome.runtime.lastError) {
+                        forceNextLecture(sectionTitle, lectureTitle, 
+                          `[Error sending transcript on retry: ${chrome.runtime.lastError.message}]`);
+                      }
                     });
                   })
                   .catch(err => {
                     // Skip this lecture if extraction fails on retry
-                    chrome.runtime.sendMessage({
-                      action: 'transcriptCaptured',
-                      sectionTitle,
-                      lectureTitle,
-                      transcript: [`[Transcript extraction failed after retry: ${err.message}]`]
-                    });
+                    forceNextLecture(sectionTitle, lectureTitle, 
+                      `[Transcript extraction failed after retry: ${err.message}]`);
                   });
               })
               .catch(retryError => {
                 // If retry also fails, send error and move to next lecture
                 console.error('Retry failed:', retryError);
-                chrome.runtime.sendMessage({
-                  action: 'transcriptCaptured',
-                  sectionTitle: `Section ${message.sectionIndex + 1}`,
-                  lectureTitle: `Lecture ${message.lectureIndex + 1}`,
-                  transcript: [`[Navigation failed after retry: ${retryError.message}]`]
-                });
+                const sectionName = `Section ${message.sectionIndex + 1}`;
+                const lectureName = `Lecture ${message.lectureIndex + 1}`;
+                forceNextLecture(sectionName, lectureName, 
+                  `[Navigation failed after retry: ${retryError.message}]`);
               });
           }, 5000);
         } else {
           // Skip this lecture after max retries
-          chrome.runtime.sendMessage({
-            action: 'transcriptCaptured',
-            sectionTitle: `Section ${message.sectionIndex + 1}`,
-            lectureTitle: `Lecture ${message.lectureIndex + 1}`,
-            transcript: [`[Navigation failed after ${MAX_RETRIES} retries: ${error.message}]`]
-          });
+          const sectionName = `Section ${message.sectionIndex + 1}`;
+          const lectureName = `Lecture ${message.lectureIndex + 1}`;
+          forceNextLecture(sectionName, lectureName, 
+            `[Navigation failed after ${MAX_RETRIES} retries: ${error.message}]`);
         }
         
         sendResponse({ success: false, error: error.message });
@@ -190,6 +192,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   else if (message.action === 'stopRecording') {
     stopRecording();
     sendResponse({ success: true });
+    return true;
+  }
+
+  // Add a new handler for checking content script health
+  if (message.action === 'pingContentScript') {
+    sendResponse({ alive: true });
     return true;
   }
 });
@@ -747,4 +755,51 @@ function showNotification(message) {
   setTimeout(() => {
     document.body.removeChild(notification);
   }, 5000);
+}
+
+// Add this new function to force moving to the next lecture after an error
+function forceNextLecture(sectionTitle, lectureTitle, errorMessage) {
+  console.log('Forcing move to next lecture after error');
+  
+  // First try to send the error message to background script
+  chrome.runtime.sendMessage({
+    action: 'transcriptCaptured',
+    sectionTitle: sectionTitle,
+    lectureTitle: lectureTitle,
+    transcript: [errorMessage]
+  }, (response) => {
+    if (chrome.runtime.lastError) {
+      console.error('Error sending error transcript:', chrome.runtime.lastError);
+      
+      // If we can't send the transcript, try sending a processing error
+      chrome.runtime.sendMessage({
+        action: 'processingError',
+        error: `Failed to capture transcript: ${errorMessage}`
+      }, (response2) => {
+        if (chrome.runtime.lastError) {
+          console.error('Failed to send processing error too:', chrome.runtime.lastError);
+          
+          // Last resort - try to restart after timeout
+          setTimeout(() => {
+            // Try to restart the whole process
+            chrome.runtime.sendMessage({
+              action: 'getRecordingStatus'
+            }, (status) => {
+              if (status && status.isRecording) {
+                updateProgressPanel('Attempting emergency recovery...');
+                
+                // Force the background page to continue to the next lecture
+                chrome.runtime.sendMessage({
+                  action: 'forceNextLecture'
+                });
+              }
+            });
+          }, 10000); // Wait 10 seconds before attempting recovery
+        }
+      });
+    }
+  });
+  
+  // Update UI to show we're trying to move forward
+  updateProgressPanel(`Error recorded. Attempting to continue...`);
 } 

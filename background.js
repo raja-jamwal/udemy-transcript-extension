@@ -207,6 +207,63 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     });
     return true;
   }
+  
+  else if (message.action === 'forceNextLecture') {
+    // Emergency recovery - force moving to the next lecture
+    console.log('Received forceNextLecture request - emergency recovery');
+    
+    if (!recordingState.isRecording) {
+      console.log('Not recording, cannot force next lecture');
+      sendResponse({ success: false, error: 'Not currently recording' });
+      return true;
+    }
+    
+    // Increment lecture index and try to continue
+    recordingState.currentLectureIndex++;
+    recordingState.errorCount++;
+    
+    console.log(`Forced moving to next lecture. Now at section ${recordingState.currentSectionIndex + 1}, lecture ${recordingState.currentLectureIndex + 1}`);
+    console.log(`Error count: ${recordingState.errorCount}/${recordingState.maxErrors}`);
+    
+    // If too many errors, stop recording
+    if (recordingState.errorCount >= recordingState.maxErrors) {
+      console.error(`Too many consecutive errors (${recordingState.errorCount}). Stopping recording.`);
+      stopRecording('Too many consecutive errors');
+      sendResponse({ success: false, stopped: true });
+    } else {
+      // Try to continue with next lecture
+      setTimeout(() => {
+        processNextLecture();
+      }, 2000); // Add a small delay before continuing
+      sendResponse({ success: true });
+    }
+    
+    return true;
+  }
+  
+  // Add a health check endpoint
+  else if (message.action === 'checkRecordingHealth') {
+    // Check if content script is still responsive
+    if (recordingState.isRecording && recordingState.courseTab) {
+      try {
+        chrome.tabs.sendMessage(recordingState.courseTab, { action: 'pingContentScript' }, (response) => {
+          if (chrome.runtime.lastError || !response || !response.alive) {
+            console.error('Content script health check failed:', chrome.runtime.lastError || 'No response');
+            sendResponse({ healthy: false, error: 'Content script not responding' });
+          } else {
+            sendResponse({ healthy: true });
+          }
+        });
+      } catch (err) {
+        console.error('Error checking content script health:', err);
+        sendResponse({ healthy: false, error: err.message });
+      }
+      return true;
+    } else {
+      sendResponse({ healthy: !recordingState.isRecording, notRecording: true });
+      return true;
+    }
+  }
 });
 
 // Navigate to the next lecture to process
@@ -233,6 +290,10 @@ function processNextLecture() {
     console.log(`Finished section ${recordingState.currentSectionIndex + 1}. Moving to next section.`);
     recordingState.currentSectionIndex++;
     recordingState.currentLectureIndex = 0;
+    
+    // Reset error count when moving to a new section
+    recordingState.errorCount = 0;
+    
     processNextLecture();
     return;
   }
@@ -252,32 +313,66 @@ function processNextLecture() {
   console.log(`Lecture title: ${currentLecture.title}`);
   
   // Send message to content script to navigate to this lecture
-  chrome.tabs.sendMessage(recordingState.courseTab, {
-    action: 'navigateToLecture',
-    sectionIndex: recordingState.currentSectionIndex,
-    lectureIndex: recordingState.currentLectureIndex
-  }, (response) => {
-    if (response && response.success) {
-      // Content script will handle navigation and transcript extraction
-      // It will send back a 'transcriptCaptured' message when done
-      console.log('Navigation request sent successfully');
-    } else {
-      console.error('Failed to navigate to lecture:', response?.error);
-      
-      // Handle error and move to next lecture
-      recordingState.errorCount++;
-      
-      // If too many consecutive errors, stop recording
-      if (recordingState.errorCount >= recordingState.maxErrors) {
-        console.error(`Too many consecutive errors (${recordingState.errorCount}). Stopping recording.`);
-        stopRecording('Too many consecutive errors');
-      } else {
-        console.log(`Moving to next lecture after error. Error count: ${recordingState.errorCount}`);
-        recordingState.currentLectureIndex++;
-        processNextLecture();
+  try {
+    chrome.tabs.sendMessage(recordingState.courseTab, {
+      action: 'navigateToLecture',
+      sectionIndex: recordingState.currentSectionIndex,
+      lectureIndex: recordingState.currentLectureIndex
+    }, (response) => {
+      // Check for runtime errors first
+      if (chrome.runtime.lastError) {
+        console.error('Chrome runtime error:', chrome.runtime.lastError.message);
+        handleLectureNavigationError(chrome.runtime.lastError.message);
+        return;
       }
-    }
-  });
+      
+      if (response && response.success) {
+        // Content script will handle navigation and transcript extraction
+        // It will send back a 'transcriptCaptured' message when done
+        console.log('Navigation request sent successfully');
+        
+        // Set up watchdog timer - if we don't get a response within 3 minutes, assume something went wrong
+        setTimeout(() => {
+          // Check if we're still on the same lecture
+          chrome.tabs.sendMessage(recordingState.courseTab, { action: 'pingContentScript' }, (pingResponse) => {
+            if (chrome.runtime.lastError || !pingResponse) {
+              console.error('Watchdog triggered - no response from content script');
+              // Force moving to next lecture
+              recordingState.errorCount++;
+              recordingState.currentLectureIndex++;
+              processNextLecture();
+            }
+          });
+        }, 180000); // 3 minutes
+      } else {
+        console.error('Failed to navigate to lecture:', response?.error);
+        handleLectureNavigationError(response?.error || 'Unknown navigation error');
+      }
+    });
+  } catch (err) {
+    console.error('Exception sending navigation message:', err);
+    handleLectureNavigationError(err.message);
+  }
+}
+
+// Helper function to handle lecture navigation errors
+function handleLectureNavigationError(errorMessage) {
+  // Handle error and move to next lecture
+  recordingState.errorCount++;
+  
+  // If too many consecutive errors, stop recording
+  if (recordingState.errorCount >= recordingState.maxErrors) {
+    console.error(`Too many consecutive errors (${recordingState.errorCount}). Stopping recording.`);
+    stopRecording('Too many consecutive errors');
+  } else {
+    console.log(`Moving to next lecture after error. Error count: ${recordingState.errorCount}`);
+    recordingState.currentLectureIndex++;
+    
+    // Add small delay before moving to next lecture
+    setTimeout(() => {
+      processNextLecture();
+    }, 1000);
+  }
 }
 
 // Stop the recording process
