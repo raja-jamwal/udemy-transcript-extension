@@ -1129,6 +1129,15 @@ function createProgressPanel() {
   content.appendChild(progressTextDiv);
   content.appendChild(progressBarContainer);
   
+  // Add attribution
+  const attribution = document.createElement('div');
+  attribution.style.textAlign = 'center';
+  attribution.style.fontSize = '10px';
+  attribution.style.color = '#757575';
+  attribution.style.marginTop = '10px';
+  attribution.innerHTML = '<a href="https://www.mypromind.com" target="_blank" style="color: #757575; text-decoration: none;">Brought to you by MyProMind.com</a>';
+  content.appendChild(attribution);
+  
   progressPanel.appendChild(header);
   progressPanel.appendChild(content);
   
