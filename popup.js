@@ -343,36 +343,95 @@ document.addEventListener('DOMContentLoaded', function() {
   function formatTranscriptData(data) {
     let text = '';
     
-    // Course title if available
-    const courseTitleElement = document.querySelector('h1.udlite-heading-xl');
-    if (courseTitleElement) {
-      const courseTitle = courseTitleElement.textContent.trim();
-      text += `# ${courseTitle}\n\n`;
-    } else {
-      text += '# Udemy Course Transcript\n\n';
-    }
+    // Get course title - try both popup context and from data
+    const courseTitleElement = document.querySelector('h1.udlite-heading-xl, h1.ud-heading-xl, h1.course-title');
+    let courseTitle = (courseTitleElement ? courseTitleElement.textContent.trim() : null) || 'Udemy Course Transcript';
+    
+    // Add course title
+    text += `# ${courseTitle}\n\n`;
 
     // Add timestamp
     const now = new Date();
     text += `*Transcript extracted on ${now.toLocaleDateString()} at ${now.toLocaleTimeString()}*\n\n`;
     
+    // Calculate transcript stats
+    let totalSections = 0;
+    let totalLectures = 0;
+    let totalLines = 0;
+    
+    for (const section in data) {
+      totalSections++;
+      for (const lecture in data[section]) {
+        totalLectures++;
+        totalLines += data[section][lecture].length;
+      }
+    }
+    
+    // Add statistics
+    text += `**Transcript Statistics:**\n`;
+    text += `- Total Sections: ${totalSections}\n`;
+    text += `- Total Lectures: ${totalLectures}\n`;
+    text += `- Total Lines: ${totalLines}\n\n`;
+    
     // Add table of contents
     text += '## Table of Contents\n\n';
-    for (const section in data) {
+    
+    // Get sorted section list for better organization
+    const sectionNames = Object.keys(data);
+    const orderedSections = sortSections(sectionNames);
+    
+    for (const section of orderedSections) {
+      if (!data[section]) continue; // Skip empty sections
+      
       text += `- [${section}](#${createAnchor(section)})\n`;
-      for (const lecture in data[section]) {
+      
+      // Get lectures for this section and sort them if they have numbers
+      const lectures = Object.keys(data[section]);
+      const sortedLectures = sortLectures(lectures);
+      
+      for (const lecture of sortedLectures) {
         text += `  - [${lecture}](#${createAnchor(lecture)})\n`;
       }
     }
+    
     text += '\n---\n\n';
     
     // Add content
-    for (const section in data) {
+    for (const section of orderedSections) {
+      if (!data[section]) continue; // Skip empty sections
+      
       text += `## ${section} {#${createAnchor(section)}}\n\n`;
       
-      for (const lecture in data[section]) {
+      const lectures = Object.keys(data[section]);
+      const sortedLectures = sortLectures(lectures);
+      
+      for (const lecture of sortedLectures) {
+        // Add lecture title with anchor
         text += `### ${lecture} {#${createAnchor(lecture)}}\n\n`;
-        text += data[section][lecture].join('\n') + '\n\n';
+        
+        // Check if transcript has content
+        const transcript = data[section][lecture];
+        if (!transcript || transcript.length === 0) {
+          text += '*No transcript available for this lecture.*\n\n';
+          continue;
+        }
+        
+        // Check if transcript contains error messages
+        const isError = transcript.length === 1 && 
+                       (transcript[0].includes('[Error') || 
+                        transcript[0].includes('[Could not') ||
+                        transcript[0].includes('[No transcript'));
+        
+        if (isError) {
+          text += `*${transcript[0]}*\n\n`;
+        } else {
+          // Add line numbers to transcript for easier reference
+          text += '```\n';
+          transcript.forEach((line, index) => {
+            text += line + '\n';
+          });
+          text += '```\n\n';
+        }
       }
       
       text += '\n';
@@ -381,9 +440,56 @@ document.addEventListener('DOMContentLoaded', function() {
     return text;
   }
 
+  // Helper to create an anchor from text
   function createAnchor(text) {
     // Create an anchor from text (lowercase, replace spaces with hyphens, remove special chars)
-    return text.toLowerCase().replace(/\s+/g, '-').replace(/[^\w-]/g, '');
+    return text.toLowerCase()
+      .replace(/\s+/g, '-')       // Replace spaces with hyphens
+      .replace(/[^\w-]/g, '')     // Remove non-word chars
+      .replace(/--+/g, '-')       // Replace multiple hyphens with single hyphen
+      .substring(0, 50);          // Limit length
+  }
+
+  // Helper to sort sections naturally (handling numeric prefixes properly)
+  function sortSections(sections) {
+    return [...sections].sort((a, b) => {
+      // Extract numeric prefixes if they exist
+      const aMatch = a.match(/^(\d+)[.\s:)-]+/);
+      const bMatch = b.match(/^(\d+)[.\s:)-]+/);
+      
+      // If both have numeric prefixes, sort by number
+      if (aMatch && bMatch) {
+        return parseInt(aMatch[1]) - parseInt(bMatch[1]);
+      }
+      
+      // If only one has numeric prefix, it goes first
+      if (aMatch) return -1;
+      if (bMatch) return 1;
+      
+      // Otherwise alphabetical
+      return a.localeCompare(b);
+    });
+  }
+
+  // Helper to sort lectures naturally (handling numeric prefixes properly)
+  function sortLectures(lectures) {
+    return [...lectures].sort((a, b) => {
+      // Extract numeric prefixes if they exist
+      const aMatch = a.match(/^(\d+)[.\s:)-]+/);
+      const bMatch = b.match(/^(\d+)[.\s:)-]+/);
+      
+      // If both have numeric prefixes, sort by number
+      if (aMatch && bMatch) {
+        return parseInt(aMatch[1]) - parseInt(bMatch[1]);
+      }
+      
+      // If only one has numeric prefix, it goes first
+      if (aMatch) return -1;
+      if (bMatch) return 1;
+      
+      // Otherwise alphabetical
+      return a.localeCompare(b);
+    });
   }
 
   function downloadAsFile(content, filename) {

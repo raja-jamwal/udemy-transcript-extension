@@ -9,7 +9,8 @@ let recordingState = {
   transcriptData: {},
   errorCount: 0,
   maxErrors: 5,
-  lastError: null
+  lastError: null,
+  currentSectionTitle: ''
 };
 
 // Clear previous state on extension install/update
@@ -88,6 +89,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             return;
           }
           
+          // Log course structure for debugging
+          console.log('Course structure summary:');
+          for (let i = 0; i < recordingState.courseData.length; i++) {
+            const section = recordingState.courseData[i];
+            console.log(`Section ${i+1}: ${section.section} - ${section.lectures.length} lectures`);
+          }
+          
           processNextLecture();
           sendResponse({ success: true });
         } else {
@@ -118,6 +126,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       console.log(`Received transcript for "${sectionTitle} - ${lectureTitle}"`);
       console.log(`Transcript length: ${transcript.length} lines`);
       
+      // Store section title for better tracking
+      if (sectionTitle) {
+        recordingState.currentSectionTitle = sectionTitle;
+      }
+      
       // Make sure we have the latest transcriptData from storage before updating
       chrome.storage.local.get(['transcriptData'], (result) => {
         let currentData = result.transcriptData || {};
@@ -125,6 +138,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         // Initialize section if it doesn't exist
         if (!currentData[sectionTitle]) {
           currentData[sectionTitle] = {};
+          console.log(`Created new section in storage: "${sectionTitle}"`);
         }
         
         // Save transcript for this lecture
@@ -134,7 +148,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         recordingState.transcriptData = currentData;
         chrome.storage.local.set({ transcriptData: currentData }, () => {
           console.log(`Saved transcript for ${sectionTitle} - ${lectureTitle}`);
-          console.log(`Storage now has ${Object.keys(currentData).length} sections`);
+          
+          // Output detailed storage info for debugging
+          let sectionCount = Object.keys(currentData).length;
+          let totalLectures = 0;
+          
+          for (const sect in currentData) {
+            const lectureCount = Object.keys(currentData[sect]).length;
+            totalLectures += lectureCount;
+            console.log(`  Section "${sect}": ${lectureCount} lectures`);
+          }
+          
+          console.log(`Storage now has ${sectionCount} sections with ${totalLectures} total lectures`);
           
           // Mark as processed
           const key = `${sectionTitle}:${lectureTitle}`;
@@ -193,7 +218,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       isRecording: recordingState.isRecording,
       currentSectionIndex: recordingState.currentSectionIndex,
       currentLectureIndex: recordingState.currentLectureIndex,
+      currentSectionTitle: recordingState.currentSectionTitle || '',
       courseTab: recordingState.courseTab,
+      courseData: recordingState.courseData, // Include course data for navigation
       errorCount: recordingState.errorCount,
       lastError: recordingState.lastError
     });
@@ -284,10 +311,13 @@ function processNextLecture() {
   
   const currentSection = sections[recordingState.currentSectionIndex];
   
+  // Update current section title for tracking
+  recordingState.currentSectionTitle = currentSection.section;
+  
   // Check if we've processed all lectures in this section
   if (recordingState.currentLectureIndex >= currentSection.lectures.length) {
     // Move to next section
-    console.log(`Finished section ${recordingState.currentSectionIndex + 1}. Moving to next section.`);
+    console.log(`Finished section ${recordingState.currentSectionIndex + 1} "${currentSection.section}". Moving to next section.`);
     recordingState.currentSectionIndex++;
     recordingState.currentLectureIndex = 0;
     
@@ -310,7 +340,7 @@ function processNextLecture() {
   }
   
   console.log(`Processing lecture: Section ${recordingState.currentSectionIndex + 1}, Lecture ${recordingState.currentLectureIndex + 1}`);
-  console.log(`Lecture title: ${currentLecture.title}`);
+  console.log(`Section: "${currentSection.section}", Lecture: "${currentLecture.title}"`);
   
   // Send message to content script to navigate to this lecture
   try {
@@ -410,6 +440,36 @@ function finishRecording() {
   
   console.log('Recording process complete! Saving final data.');
   
+  // Count captured lectures
+  let capturedCount = 0;
+  let totalSections = 0;
+  let missedSections = [];
+  
+  // Create a map to track which sections/lectures were captured
+  const capturedMap = {};
+  for (const section in recordingState.transcriptData) {
+    totalSections++;
+    capturedMap[section] = Object.keys(recordingState.transcriptData[section]).length;
+    capturedCount += capturedMap[section];
+  }
+  
+  // Check if any sections from the course structure are missing
+  if (recordingState.courseData) {
+    for (const section of recordingState.courseData) {
+      const sectionTitle = section.section;
+      if (!capturedMap[sectionTitle]) {
+        missedSections.push(sectionTitle);
+      }
+    }
+  }
+  
+  console.log(`Transcript capture summary:`);
+  console.log(`- Total sections: ${totalSections}`);
+  console.log(`- Total lectures captured: ${capturedCount}`);
+  if (missedSections.length > 0) {
+    console.log(`- Missed sections: ${missedSections.join(', ')}`);
+  }
+  
   // Save final state to storage
   chrome.storage.local.set({ transcriptData: recordingState.transcriptData }, () => {
     // Notify that recording is complete
@@ -422,6 +482,7 @@ function finishRecording() {
     recordingState.courseData = null;
     recordingState.currentSectionIndex = 0;
     recordingState.currentLectureIndex = 0;
+    recordingState.currentSectionTitle = '';
     recordingState.processedLectures = {};
     recordingState.errorCount = 0;
   });

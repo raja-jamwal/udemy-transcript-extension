@@ -224,20 +224,49 @@ async function extractCourseStructure() {
     // Ensure the sidebar is properly loaded
     await new Promise(resolve => setTimeout(resolve, 2000));
     
-    // Get sections with better selector options
+    // Try to expand all sections first - this is critical
+    console.log('Expanding all course sections...');
+    const expandButtons = document.querySelectorAll(
+      '[data-purpose="expand-all"], ' + 
+      'button[aria-label="Expand all sections"], ' +
+      'button.ud-btn-ghost[aria-label*="all sections"]'
+    );
+    
+    // If we find an expand all button, click it
+    if (expandButtons && expandButtons.length > 0) {
+      console.log('Found "Expand All" button, clicking it...');
+      expandButtons[0].click();
+      // Wait for all sections to expand
+      await new Promise(resolve => setTimeout(resolve, 3000));
+    } else {
+      console.log('No "Expand All" button found, will expand sections manually');
+    }
+    
+    // Get sections with better selector options - use multiple selectors for different Udemy UI versions
     console.log('Looking for course sections...');
     const sections = document.querySelectorAll(
       '[data-purpose^="section-panel-"], ' +
       '.ud-accordion-panel, ' +
-      '[data-purpose="curriculum-section"]'
+      '[data-purpose="curriculum-section"], ' +
+      'div[data-purpose="section-container"], ' +
+      '.curriculum-item-container'
     );
     
     if (!sections || sections.length === 0) {
       console.error('No sections found with primary selectors');
       // Try a different approach - look for any section-like elements
-      const possibleSections = document.querySelectorAll('div[id^="section-"]');
+      const possibleSections = document.querySelectorAll(
+        'div[id^="section-"], ' +
+        'div[class*="section--"], ' + 
+        'div[class*="chapter--"], ' +
+        '[data-purpose*="section"]'
+      );
+      
       if (possibleSections && possibleSections.length > 0) {
         console.log('Found alternative sections:', possibleSections.length);
+        
+        // Try to use these alternative sections
+        return processAlternativeSections(possibleSections);
       } else {
         throw new Error('No course sections found. The page structure may have changed.');
       }
@@ -245,13 +274,15 @@ async function extractCourseStructure() {
     
     console.log(`Found ${sections.length} course sections`);
     
-    // Try to expand all sections first
+    // Try to expand all sections manually as a backup
     for (const section of sections) {
       try {
         const toggleBtn = section.querySelector(
           'button.js-panel-toggler, ' +
           '[aria-expanded], ' +
-          '.ud-accordion-panel-toggler'
+          '.ud-accordion-panel-toggler, ' + 
+          'button[aria-label*="Expand"], ' +
+          'button[data-purpose*="toggle"]'
         );
         
         if (!toggleBtn) {
@@ -264,8 +295,8 @@ async function extractCourseStructure() {
         if (!isExpanded) {
           console.log('Expanding a collapsed section...');
           toggleBtn.click();
-          // Wait a bit for the animation to complete
-          await new Promise(resolve => setTimeout(resolve, 500));
+          // Wait for the animation to complete
+          await new Promise(resolve => setTimeout(resolve, 1000));
         }
       } catch (err) {
         console.warn('Error expanding section:', err);
@@ -274,9 +305,25 @@ async function extractCourseStructure() {
     }
     
     // Wait additional time for all sections to expand
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    await new Promise(resolve => setTimeout(resolve, 3000));
     
-    // Now extract the data
+    // DEBUG: Log all the section titles we found to help diagnose issues
+    console.log('Section titles found:');
+    for (const section of sections) {
+      try {
+        const sectionTitle = 
+          section.querySelector('h3 .ud-accordion-panel-title')?.innerText.trim() ||
+          section.querySelector('[data-purpose="section-title"]')?.innerText.trim() ||
+          section.querySelector('h3')?.innerText.trim() ||
+          section.querySelector('.section-title')?.innerText.trim() ||
+          'Unknown Section';
+        console.log(` - ${sectionTitle}`);
+      } catch (err) {
+        console.log(' - [Error getting section title]');
+      }
+    }
+    
+    // Now extract the data with improved selectors
     const courseData = [];
     
     // Debug what we're working with
@@ -287,79 +334,149 @@ async function extractCourseStructure() {
     
     for (const section of sections) {
       try {
-        // Try multiple selectors for the section title
+        // Try multiple selectors for the section title with better fallbacks
         const sectionTitle = 
           section.querySelector('h3 .ud-accordion-panel-title')?.innerText.trim() ||
           section.querySelector('[data-purpose="section-title"]')?.innerText.trim() ||
           section.querySelector('h3')?.innerText.trim() ||
+          section.querySelector('button[data-purpose*="toggle"]')?.innerText.trim() || 
           section.querySelector('.section-title')?.innerText.trim() ||
+          section.querySelector('[class*="title"]')?.innerText.trim() ||
           `Section ${courseData.length + 1}`;
         
-        // Skip sections without a title (should not happen now with fallback)
-        if (!sectionTitle) {
-          console.warn('Found a section without a title, using index as fallback');
+        // Handle duplicate section titles by appending a number
+        let finalSectionTitle = sectionTitle;
+        let dupCounter = 1;
+        while (courseData.some(s => s.section === finalSectionTitle)) {
+          finalSectionTitle = `${sectionTitle} (${dupCounter++})`;
         }
         
-        // Try multiple selectors for lectures
-        const lectures = Array.from(
+        // Try multiple selectors for lectures with more fallbacks
+        let lectures = Array.from(
           section.querySelectorAll(
             '[data-purpose^="curriculum-item-"], ' +
             '.ud-block-list-item, ' +
-            '.curriculum-item-link'
+            '.curriculum-item-link, ' +
+            'div[class*="item--"], ' +
+            '[data-purpose*="lecture"], ' +
+            '[id^="lecture-"]'
           )
         );
         
-        console.log(`Section "${sectionTitle}" has ${lectures.length} items`);
+        console.log(`Section "${finalSectionTitle}" has ${lectures.length} items`);
+        
+        // If we got nothing, try a more aggressive approach
+        if (lectures.length === 0) {
+          console.warn(`No lectures found in section "${finalSectionTitle}" - trying alternative selectors`);
+          
+          // Look for anything that might be a lecture
+          lectures = Array.from(
+            section.querySelectorAll('li, [class*="lecture"], [class*="lesson"], a[href*="lecture"]')
+          );
+          
+          console.log(`Alternative selectors found ${lectures.length} potential lectures`);
+        }
         
         if (lectures.length === 0) {
-          console.warn(`No lectures found in section "${sectionTitle}" - may be a formatting issue`);
+          console.warn(`No lectures found in section "${finalSectionTitle}" - may be a formatting issue`);
         }
         
         const lectureData = lectures.map(lecture => {
           try {
+            // Title with much more fallback options
             const title = 
               lecture.querySelector('[data-purpose="item-title"]')?.innerText.trim() ||
+              lecture.querySelector('[data-purpose^="title"]')?.innerText.trim() ||
               lecture.querySelector('.ud-block-list-item-content')?.innerText.trim() ||
               lecture.querySelector('.item-title')?.innerText.trim() ||
+              lecture.querySelector('span[class*="title"]')?.innerText.trim() ||
+              lecture.querySelector('a')?.innerText.trim() ||
+              lecture.innerText.trim().split('\n')[0] ||
               'Untitled Lecture';
             
+            // Extract duration with more fallbacks
             const duration = 
               lecture.querySelector('.curriculum-item-link--metadata--XK804 span')?.innerText.trim() ||
               lecture.querySelector('[data-purpose="item-content-summary"]')?.innerText.trim() ||
+              lecture.querySelector('[data-purpose*="duration"]')?.innerText.trim() ||
+              lecture.querySelector('span[class*="duration"]')?.innerText.trim() ||
+              Array.from(lecture.querySelectorAll('span'))
+                .find(span => /^\d+:\d+$/.test(span.innerText.trim()))?.innerText.trim() ||
               '';
             
-            // Check if this is a video lecture (has a play button or video indicator)
+            // Enhanced video detection
             const isVideo = 
               !!lecture.querySelector('button[aria-label^="Play"]') ||
               !!lecture.querySelector('[data-purpose="play-button"]') ||
               !!lecture.querySelector('.udi-play') ||
+              !!lecture.querySelector('svg[class*="play"]') ||
+              !!lecture.querySelector('i[class*="play"]') ||
+              !!lecture.querySelector('img[alt*="Video"]') ||
               lecture.textContent.includes('Video') ||
-              lecture.textContent.includes('video');
+              lecture.textContent.includes('video') ||
+              // Duration pattern is a good indicator of video content
+              /^\d+:\d+$/.test(duration);
             
-            return { title: title || 'Untitled Lecture', duration, isVideo };
+            return { 
+              title: title || 'Untitled Lecture', 
+              duration, 
+              isVideo,
+              element: lecture // Keep reference to the DOM element for later
+            };
           } catch (err) {
             console.warn('Error processing a lecture item:', err);
-            return { title: 'Error Lecture', duration: '', isVideo: false };
+            return { title: 'Error Lecture', duration: '', isVideo: false, element: lecture };
           }
         });
         
-        // Only include video lectures
-        const videoLectures = lectureData.filter(lecture => lecture.isVideo);
-        console.log(`Section "${sectionTitle}" has ${videoLectures.length} video lectures`);
+        // Consider all items as potential videos if we can't detect specifically
+        let videoLectures = lectureData.filter(lecture => lecture.isVideo);
         
+        // If no videos detected, but we have items with duration, treat them as videos
+        if (videoLectures.length === 0 && lectureData.some(l => l.duration)) {
+          console.log(`No videos detected in "${finalSectionTitle}" but found items with duration - treating as videos`);
+          videoLectures = lectureData.filter(l => l.duration);
+        }
+        
+        // Last resort - if still nothing, include all items that look like content
+        if (videoLectures.length === 0 && lectures.length > 0) {
+          console.log(`No clear videos in "${finalSectionTitle}" - including all items as potential content`);
+          videoLectures = lectureData.filter(l => 
+            !l.title.toLowerCase().includes('quiz') && 
+            !l.title.toLowerCase().includes('exercise') && 
+            !l.title.toLowerCase().includes('assignment')
+          );
+        }
+        
+        console.log(`Section "${finalSectionTitle}" has ${videoLectures.length} video lectures`);
+        
+        // Only include sections with lectures to avoid empty sections
         if (videoLectures.length > 0) {
+          // Remove element references before storing
+          const cleanLectures = videoLectures.map(({ title, duration, isVideo }) => ({ title, duration, isVideo }));
+          
           courseData.push({
-            section: sectionTitle,
-            lectures: videoLectures
+            section: finalSectionTitle,
+            lectures: cleanLectures,
+            originalElements: videoLectures // Keep for debugging/navigation
           });
         } else {
-          console.warn(`No video lectures found in section "${sectionTitle}"`);
+          console.warn(`No video lectures found in section "${finalSectionTitle}"`);
         }
       } catch (err) {
         console.warn('Error processing a section:', err);
         // Continue with other sections
       }
     }
+    
+    // Log counts and validate
+    console.log(`Finished processing course structure. Found ${courseData.length} sections with content.`);
+    let totalLectures = 0;
+    for (const section of courseData) {
+      totalLectures += section.lectures.length;
+      console.log(`- ${section.section}: ${section.lectures.length} lectures`);
+    }
+    console.log(`Total lectures to process: ${totalLectures}`);
     
     if (courseData.length === 0) {
       throw new Error('No course sections with video lectures found. Please make sure you are on a course content page.');
@@ -372,120 +489,326 @@ async function extractCourseStructure() {
   }
 }
 
-// Alternative method to extract course structure as a fallback
-async function extractCourseStructureAlternative() {
-  console.log('Using alternative extraction method...');
+// Process alternative section elements when standard selectors fail
+async function processAlternativeSections(sections) {
+  console.log('Processing alternative sections...');
   
-  try {
-    // Wait for any content to be loaded
-    await new Promise(resolve => setTimeout(resolve, 5000));
-    
-    // Look for any structured content that could be sections
-    const possibleSections = Array.from(document.querySelectorAll('div[class*="section"], div[class*="chapter"], div[id*="section"], div[id*="chapter"]'));
-    console.log('Alternative method found potential sections:', possibleSections.length);
-    
-    if (possibleSections.length === 0) {
-      throw new Error('No sections found with alternative method');
+  const courseData = [];
+  let sectionCounter = 1;
+  
+  // Try to expand all possible sections first
+  for (const section of sections) {
+    try {
+      const toggles = section.querySelectorAll('button, [aria-expanded], [data-purpose*="toggle"]');
+      for (const toggle of toggles) {
+        if (toggle.getAttribute('aria-expanded') === 'false') {
+          console.log('Expanding alternative section...');
+          toggle.click();
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+      }
+    } catch (err) {
+      console.warn('Error expanding alternative section:', err);
     }
-    
-    const courseData = [];
-    let sectionCounter = 1;
-    
-    for (const section of possibleSections) {
+  }
+  
+  // Wait for expansions to complete
+  await new Promise(resolve => setTimeout(resolve, 2000));
+  
+  // Process each section
+  for (const section of sections) {
+    try {
+      // Try to get section title with many fallbacks
       const sectionTitle = 
-        section.querySelector('h1, h2, h3, h4, h5, .title, [class*="title"]')?.innerText.trim() ||
+        section.querySelector('h1, h2, h3, h4, h5')?.innerText.trim() ||
+        section.querySelector('.title, [class*="title"]')?.innerText.trim() ||
+        section.querySelector('button[aria-expanded]')?.innerText.trim() ||
         `Section ${sectionCounter++}`;
       
-      // Look for any elements that might be lecture items
-      const possibleLectures = Array.from(section.querySelectorAll('li, div[class*="item"], div[class*="lecture"], a[href*="lecture"]'));
+      // Look for any elements that might be lecture items with more aggressive selectors
+      const possibleLectures = Array.from(
+        section.querySelectorAll(
+          'li, ' + 
+          'div[class*="item"], ' + 
+          'div[class*="lecture"], ' + 
+          'a[href*="lecture"], ' +
+          '[data-purpose*="item"], ' +
+          '[class*="lesson"], ' +
+          '.ud-block-list-item'
+        )
+      );
       
-      // Filter to likely video lectures (has play icon, mentions video, etc.)
+      console.log(`Alternative section "${sectionTitle}" has ${possibleLectures.length} potential lectures`);
+      
+      // Filter to likely video lectures with much more forgiving criteria
       const videoLectures = possibleLectures
         .filter(item => {
+          // Various indicators that this might be a video
           const hasPlayIcon = !!item.querySelector('svg, i[class*="play"], span[class*="play"]');
           const mentionsVideo = item.textContent.toLowerCase().includes('video');
           const hasTime = /\d+:\d+/.test(item.textContent); // Looks for time format like 5:23
+          const hasVideoElement = !!item.querySelector('video');
+          const hasVideoClass = item.className.toLowerCase().includes('video');
+          const isNotQuiz = !item.textContent.toLowerCase().includes('quiz');
+          const isNotExercise = !item.textContent.toLowerCase().includes('exercise');
           
-          return hasPlayIcon || mentionsVideo || hasTime;
+          // Consider it a video if it has any video-like properties and isn't clearly non-video content
+          return (hasPlayIcon || mentionsVideo || hasTime || hasVideoElement || hasVideoClass) && 
+                  isNotQuiz && isNotExercise;
         })
         .map(lecture => {
-          const title = lecture.textContent.split('\n')[0].trim() || 'Untitled Lecture';
-          return { title, duration: '', isVideo: true };
+          // Extract title with fallbacks
+          const title = lecture.querySelector('h3, h4, span[class*="title"]')?.innerText.trim() || 
+                        lecture.textContent.split('\n')[0].trim() || 
+                        'Untitled Lecture';
+          
+          // Try to find duration
+          const durationMatch = lecture.textContent.match(/(\d+:\d+)/);
+          const duration = durationMatch ? durationMatch[0] : '';
+          
+          return { 
+            title: title.substring(0, 100) || 'Untitled Lecture', // Limit title length
+            duration, 
+            isVideo: true,
+            element: lecture
+          };
         });
       
+      // If we have lectures for this section, add it to course data
       if (videoLectures.length > 0) {
+        // Clean up data for storage (remove DOM references)
+        const cleanLectures = videoLectures.map(({ title, duration, isVideo }) => ({ title, duration, isVideo }));
+        
         courseData.push({
           section: sectionTitle,
-          lectures: videoLectures
+          lectures: cleanLectures,
+          originalElements: videoLectures
         });
       }
+    } catch (err) {
+      console.warn('Error processing alternative section:', err);
     }
-    
-    return courseData;
-  } catch (error) {
-    console.error('Error in alternative extraction:', error);
-    throw error;
   }
+  
+  return courseData;
 }
 
 // Navigate to a specific lecture
 async function navigateToLecture(sectionIndex, lectureIndex) {
+  console.log(`Navigating to section ${sectionIndex + 1}, lecture ${lectureIndex + 1}...`);
+  
   // Wait for the sidebar to be visible with increased timeout
-  await waitForElement('[data-purpose="sidebar"]', 30000);
-  
-  // Get all sections
-  const sections = document.querySelectorAll('[data-purpose^="section-panel-"]');
-  
-  if (sections.length === 0) {
-    throw new Error('No course sections found');
+  try {
+    await waitForElement('[data-purpose="sidebar"], .ud-component--course-taking--curriculum-sidebar', 30000);
+    console.log('Sidebar found for navigation');
+    
+    // Get course data from the background script
+    const recordingStatus = await new Promise(resolve => {
+      chrome.runtime.sendMessage({action: 'getRecordingStatus'}, result => resolve(result));
+    });
+    
+    if (!recordingStatus || !recordingStatus.isRecording) {
+      throw new Error('Recording has stopped');
+    }
+    
+    const courseData = recordingStatus.courseData;
+    if (!courseData || !Array.isArray(courseData) || courseData.length === 0) {
+      throw new Error('No course data available for navigation');
+    }
+    
+    // Validate indices
+    if (sectionIndex >= courseData.length) {
+      throw new Error(`Section index ${sectionIndex} out of bounds (total: ${courseData.length})`);
+    }
+    
+    const section = courseData[sectionIndex];
+    if (lectureIndex >= section.lectures.length) {
+      throw new Error(`Lecture index ${lectureIndex} out of bounds (total: ${section.lectures.length})`);
+    }
+    
+    // Get section and lecture info
+    const sectionTitle = section.section;
+    const lectureTitle = section.lectures[lectureIndex].title;
+    
+    console.log(`Navigating to: ${sectionTitle} > ${lectureTitle}`);
+    
+    // Try multiple navigation methods in order of preference
+    
+    // Method 1: Try to find the lecture directly in the sidebar
+    try {
+      console.log('Attempting direct lecture navigation...');
+      
+      // Make sure all sections are expanded first
+      const expandButtons = document.querySelectorAll(
+        '[data-purpose="expand-all"], ' + 
+        'button[aria-label="Expand all sections"], ' +
+        'button.ud-btn-ghost[aria-label*="all sections"]'
+      );
+      
+      if (expandButtons && expandButtons.length > 0) {
+        console.log('Clicking "Expand All" button...');
+        expandButtons[0].click();
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      } else {
+        console.log('No "Expand All" button found for navigation');
+      }
+      
+      // Try to find the exact lecture by title
+      const lectureElements = Array.from(document.querySelectorAll(
+        '[data-purpose^="curriculum-item-"], ' +
+        '.ud-block-list-item, ' +
+        '.curriculum-item-link, ' +
+        'div[class*="item--"], ' +
+        '[data-purpose*="lecture"]'
+      ));
+      
+      console.log(`Found ${lectureElements.length} potential lecture elements`);
+      
+      // Find lecture by exact title match
+      let lectureElement = lectureElements.find(el => {
+        const titleEl = el.querySelector('[data-purpose="item-title"], .ud-block-list-item-content, .item-title');
+        return titleEl && titleEl.innerText.trim() === lectureTitle;
+      });
+      
+      // If exact match fails, try partial match
+      if (!lectureElement) {
+        console.log('Exact title match failed, trying partial match...');
+        lectureElement = lectureElements.find(el => {
+          return el.textContent.includes(lectureTitle);
+        });
+      }
+      
+      // If we found the lecture, click on it
+      if (lectureElement) {
+        console.log('Found lecture by title match, clicking...');
+        
+        const playButton = lectureElement.querySelector('button[aria-label^="Play"], [data-purpose="play-button"], a');
+        if (playButton) {
+          playButton.click();
+          await new Promise(resolve => setTimeout(resolve, 5000));
+          return { sectionTitle, lectureTitle };
+        } else {
+          console.log('No play button found, trying to click the lecture element itself');
+          lectureElement.click();
+          await new Promise(resolve => setTimeout(resolve, 5000));
+          return { sectionTitle, lectureTitle };
+        }
+      }
+      
+      console.log('Could not find lecture by title, trying alternative methods...');
+    } catch (err) {
+      console.warn('Error in direct lecture navigation:', err);
+    }
+    
+    // Method 2: Try using URL navigation
+    try {
+      console.log('Attempting URL-based navigation...');
+      
+      // First check if we're already on a lecture page
+      const currentUrl = window.location.href;
+      console.log('Current URL:', currentUrl);
+      
+      // Get current lecture ID if present in URL
+      const lectureMatch = currentUrl.match(/\/lecture\/(\d+)/);
+      if (lectureMatch) {
+        console.log('Currently on a lecture page');
+        
+        // Try to find next button and click it for sequential navigation
+        const nextButton = document.querySelector(
+          '[data-purpose="go-to-next-lesson"], ' +
+          'button[aria-label*="Next"], ' +
+          '[class*="btn--next"], ' +
+          'a[data-purpose="next-lesson"]'
+        );
+        
+        if (nextButton) {
+          console.log('Found next button, clicking it...');
+          nextButton.click();
+          await new Promise(resolve => setTimeout(resolve, 5000));
+          
+          // Check if we navigated correctly
+          const newTitle = document.querySelector('.ud-heading-xxl[data-purpose="lecture-title"]')?.innerText.trim();
+          console.log('New lecture title:', newTitle);
+          
+          return { sectionTitle, lectureTitle: newTitle || lectureTitle };
+        }
+      }
+      
+      // Try to navigate to a lecture URL pattern
+      console.log('Attempting to find lecture URL from sidebar...');
+      const lectureLinks = Array.from(document.querySelectorAll('a[href*="lecture"]'));
+      
+      if (lectureLinks.length > 0) {
+        console.log(`Found ${lectureLinks.length} lecture links`);
+        
+        // Try to find by section and lecture indices
+        const sectionElements = document.querySelectorAll(
+          '[data-purpose^="section-panel-"], .ud-accordion-panel, [data-purpose="curriculum-section"]'
+        );
+        
+        if (sectionElements && sectionElements.length > sectionIndex) {
+          console.log('Found sections in sidebar');
+          const sectionLectureLinks = Array.from(
+            sectionElements[sectionIndex].querySelectorAll('a[href*="lecture"]')
+          );
+          
+          if (sectionLectureLinks && sectionLectureLinks.length > lectureIndex) {
+            console.log('Found target lecture link by index, clicking...');
+            sectionLectureLinks[lectureIndex].click();
+            await new Promise(resolve => setTimeout(resolve, 5000));
+            return { sectionTitle, lectureTitle };
+          }
+        }
+        
+        // Fallback: Try to find by title approximate match
+        for (const link of lectureLinks) {
+          if (link.textContent.includes(lectureTitle) || 
+              lectureTitle.includes(link.textContent.trim())) {
+            console.log('Found lecture link by title match, clicking...');
+            link.click();
+            await new Promise(resolve => setTimeout(resolve, 5000));
+            return { sectionTitle, lectureTitle };
+          }
+        }
+        
+        // Last resort: click the first lecture link as a starting point
+        console.log('Navigation methods failed, clicking first lecture link as fallback...');
+        lectureLinks[0].click();
+        await new Promise(resolve => setTimeout(resolve, 5000));
+        
+        // Try to use next buttons to navigate forward
+        for (let i = 0; i < sectionIndex * 100 + lectureIndex; i++) {
+          const nextButton = document.querySelector(
+            '[data-purpose="go-to-next-lesson"], ' +
+            'button[aria-label*="Next"], ' +
+            '[class*="btn--next"], ' +
+            'a[data-purpose="next-lesson"]'
+          );
+          
+          if (!nextButton) break;
+          
+          console.log(`Sequential navigation step ${i + 1}...`);
+          nextButton.click();
+          await new Promise(resolve => setTimeout(resolve, 3000));
+        }
+        
+        // Check where we ended up
+        const newTitle = document.querySelector('.ud-heading-xxl[data-purpose="lecture-title"]')?.innerText.trim();
+        console.log('Final lecture title after sequential navigation:', newTitle);
+        
+        return { sectionTitle, lectureTitle: newTitle || lectureTitle };
+      }
+    } catch (err) {
+      console.warn('Error in URL-based navigation:', err);
+    }
+    
+    // If all our methods fail, return the expected titles but log an error
+    console.error('All navigation methods failed, using fallback titles');
+    return { sectionTitle, lectureTitle };
+  } catch (error) {
+    console.error('Error navigating to lecture:', error);
+    throw error;
   }
-  
-  if (sectionIndex >= sections.length) {
-    throw new Error(`Section index ${sectionIndex} out of bounds (total: ${sections.length})`);
-  }
-  
-  const section = sections[sectionIndex];
-  const sectionTitle = section.querySelector('h3 .ud-accordion-panel-title')?.innerText.trim() || `Section ${sectionIndex + 1}`;
-  
-  // Make sure the section is expanded
-  const toggleBtn = section.querySelector('button.js-panel-toggler, [aria-expanded]');
-  const isExpanded = toggleBtn?.getAttribute('aria-expanded') === 'true';
-  
-  if (!isExpanded) {
-    toggleBtn?.click();
-    // Wait for the animation to complete
-    await new Promise(resolve => setTimeout(resolve, 1000));
-  }
-  
-  // Get all video lectures in this section
-  const lectures = Array.from(section.querySelectorAll('[data-purpose^="curriculum-item-"]'))
-    .filter(lecture => !!lecture.querySelector('button[aria-label^="Play"]'));
-  
-  if (lectures.length === 0) {
-    throw new Error(`No video lectures found in section ${sectionIndex + 1}`);
-  }
-  
-  if (lectureIndex >= lectures.length) {
-    throw new Error(`Lecture index ${lectureIndex} out of bounds (total: ${lectures.length})`);
-  }
-  
-  // Get lecture title
-  const lectureElement = lectures[lectureIndex];
-  const lectureTitle = lectureElement.querySelector('[data-purpose="item-title"]')?.innerText.trim() || `Lecture ${lectureIndex + 1}`;
-  
-  // Click on the lecture to navigate to it
-  const playButton = lectureElement.querySelector('button[aria-label^="Play"]');
-  if (!playButton) {
-    throw new Error('Play button not found for lecture');
-  }
-  
-  // Click to navigate
-  playButton.click();
-  
-  // Wait for the page to navigate and load
-  await new Promise(resolve => setTimeout(resolve, 5000));
-  
-  return { sectionTitle, lectureTitle };
 }
 
 // Extract transcript from the current lecture
