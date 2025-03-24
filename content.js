@@ -1,0 +1,420 @@
+// Flag to track if we're in recording mode
+let isRecordingTranscript = false;
+let progressPanel = null;
+let currentProgress = {
+  currentSection: '',
+  currentLecture: '',
+  processedCount: 0,
+  totalCount: 0
+};
+
+// Listen for messages from the background script
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.action === 'getCourseStructure') {
+    // Extract course structure from the sidebar
+    extractCourseStructure()
+      .then(courseData => {
+        // Calculate total lectures
+        const totalLectures = courseData.reduce((total, section) => total + section.lectures.length, 0);
+        currentProgress.totalCount = totalLectures;
+        
+        // Create progress panel
+        createProgressPanel();
+        updateProgressPanel('Initializing...');
+        
+        sendResponse({ success: true, courseData });
+      })
+      .catch(error => {
+        console.error('Error extracting course structure:', error);
+        sendResponse({ success: false, error: error.message });
+      });
+    
+    return true; // Keep the message channel open for async response
+  }
+  
+  else if (message.action === 'navigateToLecture') {
+    // Update progress information
+    currentProgress.processedCount++;
+    
+    // Navigate to the specified lecture
+    navigateToLecture(message.sectionIndex, message.lectureIndex)
+      .then(({ sectionTitle, lectureTitle }) => {
+        currentProgress.currentSection = sectionTitle;
+        currentProgress.currentLecture = lectureTitle;
+        
+        // Update progress panel
+        updateProgressPanel('Recording transcript...');
+        
+        isRecordingTranscript = true;
+        // Wait for page to load and then extract transcript
+        setTimeout(() => {
+          extractTranscript()
+            .then(({ sectionTitle, lectureTitle, transcript }) => {
+              // Send transcript data back to background script
+              chrome.runtime.sendMessage({
+                action: 'transcriptCaptured',
+                sectionTitle,
+                lectureTitle,
+                transcript
+              });
+              isRecordingTranscript = false;
+            })
+            .catch(error => {
+              console.error('Error extracting transcript:', error);
+              isRecordingTranscript = false;
+              updateProgressPanel('Error extracting transcript, moving to next lecture...');
+              sendResponse({ success: false, error: error.message });
+            });
+        }, 5000); // Wait 5 seconds for page to load
+        
+        sendResponse({ success: true });
+      })
+      .catch(error => {
+        console.error('Error navigating to lecture:', error);
+        updateProgressPanel('Error navigating to lecture...');
+        sendResponse({ success: false, error: error.message });
+      });
+    
+    return true;
+  }
+  
+  else if (message.action === 'recordingComplete') {
+    removeProgressPanel();
+    showNotification('Transcript recording complete! Click the extension icon to download.');
+    sendResponse({ success: true });
+    return true;
+  }
+  
+  else if (message.action === 'stopRecording') {
+    stopRecording();
+    sendResponse({ success: true });
+    return true;
+  }
+});
+
+// Extract course structure from the sidebar
+async function extractCourseStructure() {
+  // Wait for the sidebar to be visible
+  await waitForElement('[data-purpose="sidebar"]');
+  
+  // Expand all sections first
+  const sections = document.querySelectorAll('[data-purpose^="section-panel-"]');
+  for (const section of sections) {
+    const toggleBtn = section.querySelector('button.js-panel-toggler');
+    const isExpanded = toggleBtn?.getAttribute('aria-expanded') === 'true';
+    
+    if (!isExpanded) {
+      toggleBtn?.click();
+      // Wait a bit for the animation to complete
+      await new Promise(resolve => setTimeout(resolve, 300));
+    }
+  }
+  
+  // Now extract the data
+  const courseData = [];
+  
+  for (const section of sections) {
+    const sectionTitle = section.querySelector('h3 .ud-accordion-panel-title')?.innerText.trim();
+    const lectures = Array.from(section.querySelectorAll('[data-purpose^="curriculum-item-"]'));
+    
+    const lectureData = lectures.map(lecture => {
+      const title = lecture.querySelector('[data-purpose="item-title"]')?.innerText.trim();
+      const duration = lecture.querySelector('.curriculum-item-link--metadata--XK804 span')?.innerText.trim();
+      
+      // Check if this is a video lecture (has a play button)
+      const isVideo = !!lecture.querySelector('button[aria-label^="Play"]');
+      
+      return { title, duration, isVideo };
+    });
+    
+    // Only include video lectures
+    const videoLectures = lectureData.filter(lecture => lecture.isVideo);
+    
+    courseData.push({
+      section: sectionTitle,
+      lectures: videoLectures
+    });
+  }
+  
+  return courseData;
+}
+
+// Navigate to a specific lecture
+async function navigateToLecture(sectionIndex, lectureIndex) {
+  // Wait for the sidebar to be visible
+  await waitForElement('[data-purpose="sidebar"]');
+  
+  // Get all sections
+  const sections = document.querySelectorAll('[data-purpose^="section-panel-"]');
+  
+  if (sectionIndex >= sections.length) {
+    throw new Error(`Section index ${sectionIndex} out of bounds`);
+  }
+  
+  const section = sections[sectionIndex];
+  const sectionTitle = section.querySelector('h3 .ud-accordion-panel-title')?.innerText.trim();
+  
+  // Make sure the section is expanded
+  const toggleBtn = section.querySelector('button.js-panel-toggler');
+  const isExpanded = toggleBtn?.getAttribute('aria-expanded') === 'true';
+  
+  if (!isExpanded) {
+    toggleBtn?.click();
+    // Wait for the animation to complete
+    await new Promise(resolve => setTimeout(resolve, 300));
+  }
+  
+  // Get all video lectures in this section
+  const lectures = Array.from(section.querySelectorAll('[data-purpose^="curriculum-item-"]'))
+    .filter(lecture => !!lecture.querySelector('button[aria-label^="Play"]'));
+  
+  if (lectureIndex >= lectures.length) {
+    throw new Error(`Lecture index ${lectureIndex} out of bounds`);
+  }
+  
+  // Get lecture title
+  const lectureElement = lectures[lectureIndex];
+  const lectureTitle = lectureElement.querySelector('[data-purpose="item-title"]')?.innerText.trim();
+  
+  // Click on the lecture to navigate to it
+  lectureElement.querySelector('button[aria-label^="Play"]')?.click();
+  
+  // Wait for the page to navigate and load
+  await new Promise(resolve => setTimeout(resolve, 2000));
+  
+  return { sectionTitle, lectureTitle };
+}
+
+// Extract transcript from the current lecture
+async function extractTranscript() {
+  // First, get the current section and lecture titles
+  const sectionTitle = document.querySelector('.ud-heading-sm[data-purpose="section-title"]')?.innerText.trim() || 'Unknown Section';
+  const lectureTitle = document.querySelector('.ud-heading-xxl[data-purpose="lecture-title"]')?.innerText.trim() || 'Unknown Lecture';
+  
+  // Open the transcript panel if it's not already open
+  await openTranscriptPanel();
+  
+  // Wait for transcript content to be available
+  await waitForElement('[data-purpose="cue-text"]');
+  
+  // Extract the transcript text
+  const transcriptElements = document.querySelectorAll('[data-purpose="cue-text"]');
+  const transcript = Array.from(transcriptElements).map(el => el.innerText.trim());
+  
+  // Return the transcript data
+  return { sectionTitle, lectureTitle, transcript };
+}
+
+// Open the transcript panel if it's not already open
+async function openTranscriptPanel() {
+  const transcriptButton = await waitForElement('button[data-purpose="transcript-toggle"]');
+  
+  // Check if transcript is already expanded
+  const isExpanded = transcriptButton.getAttribute('aria-expanded') === 'true';
+  
+  if (!isExpanded) {
+    // Click to expand
+    transcriptButton.click();
+    
+    // Wait for the panel to open
+    await new Promise(resolve => setTimeout(resolve, 1000));
+  }
+}
+
+// Helper function to wait for an element to be available in the DOM
+function waitForElement(selector, timeout = 10000) {
+  return new Promise((resolve, reject) => {
+    const startTime = Date.now();
+    
+    function checkElement() {
+      const element = document.querySelector(selector);
+      
+      if (element) {
+        resolve(element);
+      } else if (Date.now() - startTime > timeout) {
+        reject(new Error(`Timed out waiting for element: ${selector}`));
+      } else {
+        setTimeout(checkElement, 100);
+      }
+    }
+    
+    checkElement();
+  });
+}
+
+// Create a progress panel
+function createProgressPanel() {
+  if (progressPanel) {
+    document.body.removeChild(progressPanel);
+  }
+  
+  progressPanel = document.createElement('div');
+  progressPanel.id = 'udemy-transcript-progress';
+  progressPanel.style.position = 'fixed';
+  progressPanel.style.bottom = '20px';
+  progressPanel.style.right = '20px';
+  progressPanel.style.width = '300px';
+  progressPanel.style.backgroundColor = 'white';
+  progressPanel.style.borderRadius = '8px';
+  progressPanel.style.boxShadow = '0 2px 10px rgba(0, 0, 0, 0.2)';
+  progressPanel.style.zIndex = '9999';
+  progressPanel.style.padding = '15px';
+  progressPanel.style.fontFamily = 'Arial, sans-serif';
+  
+  const header = document.createElement('div');
+  header.style.display = 'flex';
+  header.style.justifyContent = 'space-between';
+  header.style.alignItems = 'center';
+  header.style.marginBottom = '10px';
+  
+  const title = document.createElement('h3');
+  title.textContent = 'Transcript Recorder';
+  title.style.margin = '0';
+  title.style.color = '#a435f0';
+  
+  const stopButton = document.createElement('button');
+  stopButton.textContent = 'Stop';
+  stopButton.style.backgroundColor = '#e53935';
+  stopButton.style.color = 'white';
+  stopButton.style.border = 'none';
+  stopButton.style.borderRadius = '4px';
+  stopButton.style.padding = '5px 10px';
+  stopButton.style.cursor = 'pointer';
+  stopButton.onclick = stopRecording;
+  
+  header.appendChild(title);
+  header.appendChild(stopButton);
+  
+  const content = document.createElement('div');
+  content.id = 'progress-content';
+  
+  const status = document.createElement('div');
+  status.id = 'progress-status';
+  status.style.marginBottom = '10px';
+  status.textContent = 'Initializing...';
+  
+  const sectionInfo = document.createElement('div');
+  sectionInfo.id = 'progress-section';
+  sectionInfo.style.marginBottom = '5px';
+  sectionInfo.style.fontWeight = 'bold';
+  sectionInfo.textContent = 'Section: ';
+  
+  const lectureInfo = document.createElement('div');
+  lectureInfo.id = 'progress-lecture';
+  lectureInfo.style.marginBottom = '10px';
+  lectureInfo.textContent = 'Lecture: ';
+  
+  const progressTextDiv = document.createElement('div');
+  progressTextDiv.id = 'progress-text';
+  progressTextDiv.style.display = 'flex';
+  progressTextDiv.style.justifyContent = 'space-between';
+  progressTextDiv.style.marginBottom = '5px';
+  
+  const progressCount = document.createElement('span');
+  progressCount.id = 'progress-count';
+  progressCount.textContent = '0/0 lectures processed';
+  
+  const progressPercent = document.createElement('span');
+  progressPercent.id = 'progress-percent';
+  progressPercent.textContent = '0%';
+  
+  progressTextDiv.appendChild(progressCount);
+  progressTextDiv.appendChild(progressPercent);
+  
+  const progressBarContainer = document.createElement('div');
+  progressBarContainer.style.width = '100%';
+  progressBarContainer.style.backgroundColor = '#e0e0e0';
+  progressBarContainer.style.height = '8px';
+  progressBarContainer.style.borderRadius = '4px';
+  progressBarContainer.style.overflow = 'hidden';
+  
+  const progressBar = document.createElement('div');
+  progressBar.id = 'progress-bar';
+  progressBar.style.width = '0%';
+  progressBar.style.height = '100%';
+  progressBar.style.backgroundColor = '#a435f0';
+  progressBar.style.transition = 'width 0.3s';
+  
+  progressBarContainer.appendChild(progressBar);
+  
+  content.appendChild(status);
+  content.appendChild(sectionInfo);
+  content.appendChild(lectureInfo);
+  content.appendChild(progressTextDiv);
+  content.appendChild(progressBarContainer);
+  
+  progressPanel.appendChild(header);
+  progressPanel.appendChild(content);
+  
+  document.body.appendChild(progressPanel);
+}
+
+// Update the progress panel with current status
+function updateProgressPanel(statusText) {
+  if (!progressPanel) return;
+  
+  const statusElement = document.getElementById('progress-status');
+  const sectionElement = document.getElementById('progress-section');
+  const lectureElement = document.getElementById('progress-lecture');
+  const countElement = document.getElementById('progress-count');
+  const percentElement = document.getElementById('progress-percent');
+  const barElement = document.getElementById('progress-bar');
+  
+  if (statusElement) statusElement.textContent = statusText;
+  if (sectionElement) sectionElement.textContent = `Section: ${currentProgress.currentSection}`;
+  if (lectureElement) lectureElement.textContent = `Lecture: ${currentProgress.currentLecture}`;
+  
+  if (countElement) {
+    countElement.textContent = `${currentProgress.processedCount}/${currentProgress.totalCount} lectures processed`;
+  }
+  
+  const percent = currentProgress.totalCount > 0 
+    ? Math.round((currentProgress.processedCount / currentProgress.totalCount) * 100) 
+    : 0;
+  
+  if (percentElement) percentElement.textContent = `${percent}%`;
+  if (barElement) barElement.style.width = `${percent}%`;
+}
+
+// Remove the progress panel
+function removeProgressPanel() {
+  if (progressPanel && progressPanel.parentNode) {
+    document.body.removeChild(progressPanel);
+    progressPanel = null;
+  }
+}
+
+// Stop the recording process
+function stopRecording() {
+  chrome.runtime.sendMessage({ action: 'stopRecording' }, (response) => {
+    if (response && response.success) {
+      showNotification('Transcript recording stopped by user.');
+      removeProgressPanel();
+    }
+  });
+}
+
+// Show a notification to the user
+function showNotification(message) {
+  // Create the notification element
+  const notification = document.createElement('div');
+  notification.textContent = message;
+  notification.style.position = 'fixed';
+  notification.style.top = '20px';
+  notification.style.right = '20px';
+  notification.style.backgroundColor = '#a435f0';
+  notification.style.color = 'white';
+  notification.style.padding = '10px 15px';
+  notification.style.borderRadius = '4px';
+  notification.style.boxShadow = '0 2px 8px rgba(0, 0, 0, 0.2)';
+  notification.style.zIndex = '9999';
+  notification.style.maxWidth = '300px';
+  
+  // Add to the page
+  document.body.appendChild(notification);
+  
+  // Remove after 5 seconds
+  setTimeout(() => {
+    document.body.removeChild(notification);
+  }, 5000);
+} 
