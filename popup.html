@@ -4,19 +4,28 @@
   <title>Udemy Transcript Extractor</title>
   <style>
     body {
-      width: 300px;
       font-family: Arial, sans-serif;
-      padding: 10px;
+      width: 350px;
+      padding: 20px;
+      margin: 0;
+    }
+    h1 {
+      color: #a435f0;
+      text-align: center;
+      margin-top: 0;
+      margin-bottom: 20px;
+      font-size: 20px;
     }
     button {
-      padding: 8px 16px;
-      margin: 5px 0;
-      width: 100%;
-      cursor: pointer;
       background-color: #a435f0;
       color: white;
       border: none;
+      padding: 10px 15px;
+      cursor: pointer;
+      width: 100%;
+      margin-bottom: 10px;
       border-radius: 4px;
+      transition: background-color 0.3s;
     }
     button:hover {
       background-color: #8710d8;
@@ -24,45 +33,132 @@
     .hidden {
       display: none;
     }
-    #status {
-      margin-top: 10px;
-      padding: 8px;
-      border-radius: 4px;
-      text-align: center;
-    }
-    .success {
-      background-color: #e3fbe3;
-      color: #1e7d1e;
-    }
-    .error {
-      background-color: #fbe3e3;
-      color: #7d1e1e;
-    }
     #stop-recording {
       background-color: #e53935;
     }
     #stop-recording:hover {
       background-color: #c62828;
     }
+    #clear-transcripts {
+      background-color: #757575;
+    }
+    #clear-transcripts:hover {
+      background-color: #616161;
+    }
+    #confirmation-dialog {
+      background-color: #f5f5f5;
+      padding: 15px;
+      border-radius: 4px;
+      margin-bottom: 15px;
+    }
+    #confirmation-dialog p {
+      margin-top: 0;
+    }
+    .confirm-buttons {
+      display: flex;
+      gap: 10px;
+    }
+    .confirm-buttons button {
+      flex: 1;
+    }
+    #confirm-yes {
+      background-color: #4caf50;
+    }
+    #confirm-yes:hover {
+      background-color: #388e3c;
+    }
+    #confirm-no {
+      background-color: #f44336;
+    }
+    #confirm-no:hover {
+      background-color: #d32f2f;
+    }
+    #status {
+      margin-bottom: 15px;
+      padding: 10px;
+      border-radius: 4px;
+      text-align: center;
+    }
+    .error {
+      background-color: #ffebee;
+      color: #c62828;
+      border: 1px solid #ef9a9a;
+    }
+    .success {
+      background-color: #e8f5e9;
+      color: #2e7d32;
+      border: 1px solid #a5d6a7;
+    }
+    .info {
+      background-color: #e3f2fd;
+      color: #1565c0;
+      border: 1px solid #90caf9;
+    }
+    .loading {
+      display: inline-block;
+      width: 15px;
+      height: 15px;
+      border: 2px solid rgba(0, 0, 0, 0.1);
+      border-radius: 50%;
+      border-top-color: #a435f0;
+      animation: spin 1s ease-in-out infinite;
+      margin-right: 8px;
+      vertical-align: middle;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    .version {
+      text-align: center;
+      font-size: 10px;
+      color: #757575;
+      margin-top: 15px;
+    }
+    .debug-info {
+      background-color: #f5f5f5;
+      padding: 10px;
+      border-radius: 4px;
+      margin-top: 15px;
+      font-size: 12px;
+      color: #757575;
+    }
   </style>
+  <script src="popup.js"></script>
 </head>
 <body>
-  <h2>Udemy Transcript Extractor</h2>
+  <h1>Udemy Transcript Extractor</h1>
   
+  <!-- Status Message -->
+  <div id="status" class="hidden"></div>
+  
+  <!-- Confirmation Dialog -->
+  <div id="confirmation-dialog" class="hidden">
+    <p>This will extract transcripts from all videos in the course. The process will:</p>
+    <ol>
+      <li>Navigate through each video in the course</li>
+      <li>Extract transcript text from each video</li>
+      <li>Save all transcripts for downloading later</li>
+    </ol>
+    <p>During recording, please <strong>don't interact with the Udemy page</strong> until the process is complete.</p>
+    <div class="confirm-buttons">
+      <button id="confirm-yes">Start Recording</button>
+      <button id="confirm-no">Cancel</button>
+    </div>
+  </div>
+  
+  <!-- Main Controls -->
   <div id="main-controls">
     <button id="start-recording">Record Course Transcripts</button>
     <button id="stop-recording" class="hidden">Stop Recording</button>
     <button id="download-transcripts" class="hidden">Download Transcripts</button>
+    <button id="clear-transcripts" class="hidden">Clear Transcripts</button>
   </div>
   
-  <div id="confirmation-dialog" class="hidden">
-    <p>This will save transcripts for all sections of the course. Continue?</p>
-    <button id="confirm-yes">Continue</button>
-    <button id="confirm-no">Cancel</button>
+  <!-- Debug Info (hidden by default) -->
+  <div id="debug-info" class="debug-info hidden">
+    <div id="debug-content"></div>
   </div>
   
-  <div id="status" class="hidden"></div>
-
-  <script src="popup.js"></script>
+  <div class="version">v1.0.0 - Udemy Transcript Extractor</div>
 </body>
 </html> 

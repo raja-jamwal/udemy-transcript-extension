@@ -7,10 +7,21 @@ let currentProgress = {
   processedCount: 0,
   totalCount: 0
 };
+let retryCount = 0;
+const MAX_RETRIES = 3;
 
 // Listen for messages from the background script
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'getCourseStructure') {
+    console.log('Received getCourseStructure request');
+    
+    // Check if we're on a course page
+    if (!window.location.href.includes('/course/') && !window.location.href.includes('/learn/')) {
+      console.error('Not on a Udemy course page');
+      sendResponse({ success: false, error: 'Not on a Udemy course page. Please navigate to a Udemy course.' });
+      return true;
+    }
+    
     // Extract course structure from the sidebar
     extractCourseStructure()
       .then(courseData => {
@@ -22,11 +33,40 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         createProgressPanel();
         updateProgressPanel('Initializing...');
         
+        // Debug log the course structure
+        console.log('Course structure extracted:', courseData);
+        console.log(`Found ${courseData.length} sections with a total of ${totalLectures} lectures`);
+        
         sendResponse({ success: true, courseData });
       })
       .catch(error => {
         console.error('Error extracting course structure:', error);
-        sendResponse({ success: false, error: error.message });
+        console.log('DOM at time of error:', document.body.innerHTML.substring(0, 500) + '...');
+        
+        // Try alternative extraction method
+        console.log('Attempting alternative extraction method...');
+        extractCourseStructureAlternative()
+          .then(courseData => {
+            if (courseData && courseData.length > 0) {
+              console.log('Alternative extraction successful!');
+              const totalLectures = courseData.reduce((total, section) => total + section.lectures.length, 0);
+              currentProgress.totalCount = totalLectures;
+              createProgressPanel();
+              sendResponse({ success: true, courseData });
+            } else {
+              sendResponse({ 
+                success: false, 
+                error: `Failed to extract course structure: ${error.message}. Please try refreshing the page.`
+              });
+            }
+          })
+          .catch(altError => {
+            console.error('Alternative extraction also failed:', altError);
+            sendResponse({ 
+              success: false, 
+              error: `Failed to extract course structure: ${error.message}. Alternative method also failed: ${altError.message}`
+            });
+          });
       });
     
     return true; // Keep the message channel open for async response
@@ -35,6 +75,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   else if (message.action === 'navigateToLecture') {
     // Update progress information
     currentProgress.processedCount++;
+    
+    // Reset retry count for each new lecture
+    retryCount = 0;
     
     // Navigate to the specified lecture
     navigateToLecture(message.sectionIndex, message.lectureIndex)
@@ -63,15 +106,74 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               console.error('Error extracting transcript:', error);
               isRecordingTranscript = false;
               updateProgressPanel('Error extracting transcript, moving to next lecture...');
-              sendResponse({ success: false, error: error.message });
+              
+              // Continue to next lecture even if transcript extraction fails
+              chrome.runtime.sendMessage({
+                action: 'transcriptCaptured',
+                sectionTitle: currentProgress.currentSection,
+                lectureTitle: currentProgress.currentLecture,
+                transcript: [`[Could not extract transcript: ${error.message}]`]
+              });
             });
-        }, 5000); // Wait 5 seconds for page to load
+        }, 8000); // Increase wait time to 8 seconds for page to fully load
         
         sendResponse({ success: true });
       })
       .catch(error => {
         console.error('Error navigating to lecture:', error);
-        updateProgressPanel('Error navigating to lecture...');
+        updateProgressPanel(`Error navigating to lecture: ${error.message}`);
+        
+        // Try again if under max retries
+        if (retryCount < MAX_RETRIES) {
+          retryCount++;
+          updateProgressPanel(`Retrying... (${retryCount}/${MAX_RETRIES})`);
+          
+          // Wait and retry
+          setTimeout(() => {
+            navigateToLecture(message.sectionIndex, message.lectureIndex)
+              .then(({ sectionTitle, lectureTitle }) => {
+                // Continue with normal process
+                // (similar code as above, but simplified for retry)
+                extractTranscript()
+                  .then(({ transcript }) => {
+                    chrome.runtime.sendMessage({
+                      action: 'transcriptCaptured',
+                      sectionTitle,
+                      lectureTitle,
+                      transcript
+                    });
+                  })
+                  .catch(err => {
+                    // Skip this lecture if extraction fails on retry
+                    chrome.runtime.sendMessage({
+                      action: 'transcriptCaptured',
+                      sectionTitle,
+                      lectureTitle,
+                      transcript: [`[Transcript extraction failed after retry: ${err.message}]`]
+                    });
+                  });
+              })
+              .catch(retryError => {
+                // If retry also fails, send error and move to next lecture
+                console.error('Retry failed:', retryError);
+                chrome.runtime.sendMessage({
+                  action: 'transcriptCaptured',
+                  sectionTitle: `Section ${message.sectionIndex + 1}`,
+                  lectureTitle: `Lecture ${message.lectureIndex + 1}`,
+                  transcript: [`[Navigation failed after retry: ${retryError.message}]`]
+                });
+              });
+          }, 5000);
+        } else {
+          // Skip this lecture after max retries
+          chrome.runtime.sendMessage({
+            action: 'transcriptCaptured',
+            sectionTitle: `Section ${message.sectionIndex + 1}`,
+            lectureTitle: `Lecture ${message.lectureIndex + 1}`,
+            transcript: [`[Navigation failed after ${MAX_RETRIES} retries: ${error.message}]`]
+          });
+        }
+        
         sendResponse({ success: false, error: error.message });
       });
     
@@ -94,137 +196,363 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 // Extract course structure from the sidebar
 async function extractCourseStructure() {
-  // Wait for the sidebar to be visible
-  await waitForElement('[data-purpose="sidebar"]');
+  console.log('Starting course structure extraction...');
   
-  // Expand all sections first
-  const sections = document.querySelectorAll('[data-purpose^="section-panel-"]');
-  for (const section of sections) {
-    const toggleBtn = section.querySelector('button.js-panel-toggler');
-    const isExpanded = toggleBtn?.getAttribute('aria-expanded') === 'true';
+  // Check if we're on a course page
+  if (!window.location.href.includes('/course/') && !window.location.href.includes('/learn/')) {
+    throw new Error('Not on a Udemy course page');
+  }
+  
+  // Debug current page
+  console.log('Current URL:', window.location.href);
+  console.log('Page title:', document.title);
+  
+  try {
+    // Wait for the sidebar to be visible with increased timeout
+    console.log('Waiting for sidebar...');
+    await waitForElement('[data-purpose="sidebar"], .ud-component--course-taking--curriculum-sidebar', 30000);
+    console.log('Sidebar found!');
     
-    if (!isExpanded) {
-      toggleBtn?.click();
-      // Wait a bit for the animation to complete
-      await new Promise(resolve => setTimeout(resolve, 300));
+    // Ensure the sidebar is properly loaded
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    
+    // Get sections with better selector options
+    console.log('Looking for course sections...');
+    const sections = document.querySelectorAll(
+      '[data-purpose^="section-panel-"], ' +
+      '.ud-accordion-panel, ' +
+      '[data-purpose="curriculum-section"]'
+    );
+    
+    if (!sections || sections.length === 0) {
+      console.error('No sections found with primary selectors');
+      // Try a different approach - look for any section-like elements
+      const possibleSections = document.querySelectorAll('div[id^="section-"]');
+      if (possibleSections && possibleSections.length > 0) {
+        console.log('Found alternative sections:', possibleSections.length);
+      } else {
+        throw new Error('No course sections found. The page structure may have changed.');
+      }
     }
+    
+    console.log(`Found ${sections.length} course sections`);
+    
+    // Try to expand all sections first
+    for (const section of sections) {
+      try {
+        const toggleBtn = section.querySelector(
+          'button.js-panel-toggler, ' +
+          '[aria-expanded], ' +
+          '.ud-accordion-panel-toggler'
+        );
+        
+        if (!toggleBtn) {
+          console.log('No toggle button found for a section, may already be expanded');
+          continue;
+        }
+        
+        const isExpanded = toggleBtn.getAttribute('aria-expanded') === 'true';
+        
+        if (!isExpanded) {
+          console.log('Expanding a collapsed section...');
+          toggleBtn.click();
+          // Wait a bit for the animation to complete
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+      } catch (err) {
+        console.warn('Error expanding section:', err);
+        // Continue with other sections
+      }
+    }
+    
+    // Wait additional time for all sections to expand
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    
+    // Now extract the data
+    const courseData = [];
+    
+    // Debug what we're working with
+    console.log('Section elements found:', sections.length);
+    if (sections.length > 0) {
+      console.log('First section HTML structure:', sections[0].outerHTML.substring(0, 500) + '...');
+    }
+    
+    for (const section of sections) {
+      try {
+        // Try multiple selectors for the section title
+        const sectionTitle = 
+          section.querySelector('h3 .ud-accordion-panel-title')?.innerText.trim() ||
+          section.querySelector('[data-purpose="section-title"]')?.innerText.trim() ||
+          section.querySelector('h3')?.innerText.trim() ||
+          section.querySelector('.section-title')?.innerText.trim() ||
+          `Section ${courseData.length + 1}`;
+        
+        // Skip sections without a title (should not happen now with fallback)
+        if (!sectionTitle) {
+          console.warn('Found a section without a title, using index as fallback');
+        }
+        
+        // Try multiple selectors for lectures
+        const lectures = Array.from(
+          section.querySelectorAll(
+            '[data-purpose^="curriculum-item-"], ' +
+            '.ud-block-list-item, ' +
+            '.curriculum-item-link'
+          )
+        );
+        
+        console.log(`Section "${sectionTitle}" has ${lectures.length} items`);
+        
+        if (lectures.length === 0) {
+          console.warn(`No lectures found in section "${sectionTitle}" - may be a formatting issue`);
+        }
+        
+        const lectureData = lectures.map(lecture => {
+          try {
+            const title = 
+              lecture.querySelector('[data-purpose="item-title"]')?.innerText.trim() ||
+              lecture.querySelector('.ud-block-list-item-content')?.innerText.trim() ||
+              lecture.querySelector('.item-title')?.innerText.trim() ||
+              'Untitled Lecture';
+            
+            const duration = 
+              lecture.querySelector('.curriculum-item-link--metadata--XK804 span')?.innerText.trim() ||
+              lecture.querySelector('[data-purpose="item-content-summary"]')?.innerText.trim() ||
+              '';
+            
+            // Check if this is a video lecture (has a play button or video indicator)
+            const isVideo = 
+              !!lecture.querySelector('button[aria-label^="Play"]') ||
+              !!lecture.querySelector('[data-purpose="play-button"]') ||
+              !!lecture.querySelector('.udi-play') ||
+              lecture.textContent.includes('Video') ||
+              lecture.textContent.includes('video');
+            
+            return { title: title || 'Untitled Lecture', duration, isVideo };
+          } catch (err) {
+            console.warn('Error processing a lecture item:', err);
+            return { title: 'Error Lecture', duration: '', isVideo: false };
+          }
+        });
+        
+        // Only include video lectures
+        const videoLectures = lectureData.filter(lecture => lecture.isVideo);
+        console.log(`Section "${sectionTitle}" has ${videoLectures.length} video lectures`);
+        
+        if (videoLectures.length > 0) {
+          courseData.push({
+            section: sectionTitle,
+            lectures: videoLectures
+          });
+        } else {
+          console.warn(`No video lectures found in section "${sectionTitle}"`);
+        }
+      } catch (err) {
+        console.warn('Error processing a section:', err);
+        // Continue with other sections
+      }
+    }
+    
+    if (courseData.length === 0) {
+      throw new Error('No course sections with video lectures found. Please make sure you are on a course content page.');
+    }
+    
+    return courseData;
+  } catch (error) {
+    console.error('Error in extractCourseStructure:', error);
+    throw error;
   }
+}
+
+// Alternative method to extract course structure as a fallback
+async function extractCourseStructureAlternative() {
+  console.log('Using alternative extraction method...');
   
-  // Now extract the data
-  const courseData = [];
-  
-  for (const section of sections) {
-    const sectionTitle = section.querySelector('h3 .ud-accordion-panel-title')?.innerText.trim();
-    const lectures = Array.from(section.querySelectorAll('[data-purpose^="curriculum-item-"]'));
+  try {
+    // Wait for any content to be loaded
+    await new Promise(resolve => setTimeout(resolve, 5000));
     
-    const lectureData = lectures.map(lecture => {
-      const title = lecture.querySelector('[data-purpose="item-title"]')?.innerText.trim();
-      const duration = lecture.querySelector('.curriculum-item-link--metadata--XK804 span')?.innerText.trim();
+    // Look for any structured content that could be sections
+    const possibleSections = Array.from(document.querySelectorAll('div[class*="section"], div[class*="chapter"], div[id*="section"], div[id*="chapter"]'));
+    console.log('Alternative method found potential sections:', possibleSections.length);
+    
+    if (possibleSections.length === 0) {
+      throw new Error('No sections found with alternative method');
+    }
+    
+    const courseData = [];
+    let sectionCounter = 1;
+    
+    for (const section of possibleSections) {
+      const sectionTitle = 
+        section.querySelector('h1, h2, h3, h4, h5, .title, [class*="title"]')?.innerText.trim() ||
+        `Section ${sectionCounter++}`;
       
-      // Check if this is a video lecture (has a play button)
-      const isVideo = !!lecture.querySelector('button[aria-label^="Play"]');
+      // Look for any elements that might be lecture items
+      const possibleLectures = Array.from(section.querySelectorAll('li, div[class*="item"], div[class*="lecture"], a[href*="lecture"]'));
       
-      return { title, duration, isVideo };
-    });
+      // Filter to likely video lectures (has play icon, mentions video, etc.)
+      const videoLectures = possibleLectures
+        .filter(item => {
+          const hasPlayIcon = !!item.querySelector('svg, i[class*="play"], span[class*="play"]');
+          const mentionsVideo = item.textContent.toLowerCase().includes('video');
+          const hasTime = /\d+:\d+/.test(item.textContent); // Looks for time format like 5:23
+          
+          return hasPlayIcon || mentionsVideo || hasTime;
+        })
+        .map(lecture => {
+          const title = lecture.textContent.split('\n')[0].trim() || 'Untitled Lecture';
+          return { title, duration: '', isVideo: true };
+        });
+      
+      if (videoLectures.length > 0) {
+        courseData.push({
+          section: sectionTitle,
+          lectures: videoLectures
+        });
+      }
+    }
     
-    // Only include video lectures
-    const videoLectures = lectureData.filter(lecture => lecture.isVideo);
-    
-    courseData.push({
-      section: sectionTitle,
-      lectures: videoLectures
-    });
+    return courseData;
+  } catch (error) {
+    console.error('Error in alternative extraction:', error);
+    throw error;
   }
-  
-  return courseData;
 }
 
 // Navigate to a specific lecture
 async function navigateToLecture(sectionIndex, lectureIndex) {
-  // Wait for the sidebar to be visible
-  await waitForElement('[data-purpose="sidebar"]');
+  // Wait for the sidebar to be visible with increased timeout
+  await waitForElement('[data-purpose="sidebar"]', 30000);
   
   // Get all sections
   const sections = document.querySelectorAll('[data-purpose^="section-panel-"]');
   
+  if (sections.length === 0) {
+    throw new Error('No course sections found');
+  }
+  
   if (sectionIndex >= sections.length) {
-    throw new Error(`Section index ${sectionIndex} out of bounds`);
+    throw new Error(`Section index ${sectionIndex} out of bounds (total: ${sections.length})`);
   }
   
   const section = sections[sectionIndex];
-  const sectionTitle = section.querySelector('h3 .ud-accordion-panel-title')?.innerText.trim();
+  const sectionTitle = section.querySelector('h3 .ud-accordion-panel-title')?.innerText.trim() || `Section ${sectionIndex + 1}`;
   
   // Make sure the section is expanded
-  const toggleBtn = section.querySelector('button.js-panel-toggler');
+  const toggleBtn = section.querySelector('button.js-panel-toggler, [aria-expanded]');
   const isExpanded = toggleBtn?.getAttribute('aria-expanded') === 'true';
   
   if (!isExpanded) {
     toggleBtn?.click();
     // Wait for the animation to complete
-    await new Promise(resolve => setTimeout(resolve, 300));
+    await new Promise(resolve => setTimeout(resolve, 1000));
   }
   
   // Get all video lectures in this section
   const lectures = Array.from(section.querySelectorAll('[data-purpose^="curriculum-item-"]'))
     .filter(lecture => !!lecture.querySelector('button[aria-label^="Play"]'));
   
+  if (lectures.length === 0) {
+    throw new Error(`No video lectures found in section ${sectionIndex + 1}`);
+  }
+  
   if (lectureIndex >= lectures.length) {
-    throw new Error(`Lecture index ${lectureIndex} out of bounds`);
+    throw new Error(`Lecture index ${lectureIndex} out of bounds (total: ${lectures.length})`);
   }
   
   // Get lecture title
   const lectureElement = lectures[lectureIndex];
-  const lectureTitle = lectureElement.querySelector('[data-purpose="item-title"]')?.innerText.trim();
+  const lectureTitle = lectureElement.querySelector('[data-purpose="item-title"]')?.innerText.trim() || `Lecture ${lectureIndex + 1}`;
   
   // Click on the lecture to navigate to it
-  lectureElement.querySelector('button[aria-label^="Play"]')?.click();
+  const playButton = lectureElement.querySelector('button[aria-label^="Play"]');
+  if (!playButton) {
+    throw new Error('Play button not found for lecture');
+  }
+  
+  // Click to navigate
+  playButton.click();
   
   // Wait for the page to navigate and load
-  await new Promise(resolve => setTimeout(resolve, 2000));
+  await new Promise(resolve => setTimeout(resolve, 5000));
   
   return { sectionTitle, lectureTitle };
 }
 
 // Extract transcript from the current lecture
 async function extractTranscript() {
-  // First, get the current section and lecture titles
-  const sectionTitle = document.querySelector('.ud-heading-sm[data-purpose="section-title"]')?.innerText.trim() || 'Unknown Section';
-  const lectureTitle = document.querySelector('.ud-heading-xxl[data-purpose="lecture-title"]')?.innerText.trim() || 'Unknown Lecture';
+  // First, get the current section and lecture titles from the page
+  const sectionTitle = document.querySelector('.ud-heading-sm[data-purpose="section-title"]')?.innerText.trim() 
+    || currentProgress.currentSection 
+    || 'Unknown Section';
   
-  // Open the transcript panel if it's not already open
-  await openTranscriptPanel();
+  const lectureTitle = document.querySelector('.ud-heading-xxl[data-purpose="lecture-title"]')?.innerText.trim() 
+    || currentProgress.currentLecture 
+    || 'Unknown Lecture';
   
-  // Wait for transcript content to be available
-  await waitForElement('[data-purpose="cue-text"]');
-  
-  // Extract the transcript text
-  const transcriptElements = document.querySelectorAll('[data-purpose="cue-text"]');
-  const transcript = Array.from(transcriptElements).map(el => el.innerText.trim());
-  
-  // Return the transcript data
-  return { sectionTitle, lectureTitle, transcript };
+  try {
+    // Open the transcript panel if it's not already open
+    await openTranscriptPanel();
+    
+    // Wait for transcript content to be available
+    await waitForElement('[data-purpose="cue-text"]', 15000);
+    
+    // Extract the transcript text
+    const transcriptElements = document.querySelectorAll('[data-purpose="cue-text"]');
+    
+    if (transcriptElements.length === 0) {
+      return { 
+        sectionTitle, 
+        lectureTitle, 
+        transcript: ['[No transcript available for this lecture]'] 
+      };
+    }
+    
+    const transcript = Array.from(transcriptElements).map(el => el.innerText.trim());
+    
+    // Return the transcript data
+    return { sectionTitle, lectureTitle, transcript };
+  } catch (error) {
+    console.error('Error extracting transcript:', error);
+    
+    // If transcript can't be found, return an empty transcript
+    return { 
+      sectionTitle, 
+      lectureTitle, 
+      transcript: [`[Could not extract transcript: ${error.message}]`] 
+    };
+  }
 }
 
 // Open the transcript panel if it's not already open
 async function openTranscriptPanel() {
-  const transcriptButton = await waitForElement('button[data-purpose="transcript-toggle"]');
-  
-  // Check if transcript is already expanded
-  const isExpanded = transcriptButton.getAttribute('aria-expanded') === 'true';
-  
-  if (!isExpanded) {
-    // Click to expand
-    transcriptButton.click();
+  try {
+    const transcriptButton = await waitForElement('button[data-purpose="transcript-toggle"]', 10000);
     
-    // Wait for the panel to open
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    // Check if transcript is already expanded
+    const isExpanded = transcriptButton.getAttribute('aria-expanded') === 'true';
+    
+    if (!isExpanded) {
+      // Click to expand
+      transcriptButton.click();
+      
+      // Wait for the panel to open
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+  } catch (error) {
+    // If transcript button isn't found, the video might not have a transcript
+    console.warn('Transcript button not found:', error);
+    throw new Error('No transcript available for this lecture');
   }
 }
 
-// Helper function to wait for an element to be available in the DOM
-function waitForElement(selector, timeout = 10000) {
+// Helper function to wait for an element to be available in the DOM with exponential backoff
+function waitForElement(selector, timeout = 15000) {
   return new Promise((resolve, reject) => {
     const startTime = Date.now();
+    let interval = 100;
+    const maxInterval = 1000;
     
     function checkElement() {
       const element = document.querySelector(selector);
@@ -234,7 +562,9 @@ function waitForElement(selector, timeout = 10000) {
       } else if (Date.now() - startTime > timeout) {
         reject(new Error(`Timed out waiting for element: ${selector}`));
       } else {
-        setTimeout(checkElement, 100);
+        // Exponential backoff
+        interval = Math.min(interval * 1.5, maxInterval);
+        setTimeout(checkElement, interval);
       }
     }
     
