@@ -367,11 +367,6 @@ document.addEventListener('DOMContentLoaded', function() {
       }
     }
     
-    // Add statistics
-    text += `**Transcript Statistics:**\n`;
-    text += `- Total Sections: ${totalSections}\n`;
-    text += `- Total Lectures: ${totalLectures}\n`;
-    text += `- Total Lines: ${totalLines}\n\n`;
     
     // Add table of contents
     text += '## Table of Contents\n\n';
