@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Udemy Transcript Extractor",
   "version": "1.0",
-  "description": "Extract and save transcripts from Udemy courses",
+  "description": "Enhance your learning experience by using the transcripts with popular AI tools like NoteLLM, ChatGPT, Gemini, Claude, and more.",
   "permissions": ["storage", "tabs", "scripting"],
   "host_permissions": ["https://*.udemy.com/*"],
   "background": {

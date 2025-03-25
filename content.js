@@ -191,10 +191,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     
     // Hide stop button, show close button
-    const stopButton = progressPanel.querySelector('button[onclick="stopRecording"]');
+    const stopButton = progressPanel.querySelector('button');
     const closeButton = document.getElementById('close-button');
-    if (stopButton) stopButton.style.display = 'none';
-    if (closeButton) closeButton.style.display = 'block';
+    if (stopButton && stopButton.textContent === 'Stop') {
+      stopButton.style.display = 'none';
+    }
+    if (closeButton) {
+      closeButton.style.display = 'block';
+    }
     
     // Show download button
     const downloadContainer = document.getElementById('download-container');
@@ -1303,10 +1307,14 @@ function stopRecording() {
       }
       
       // Hide stop button, show close button
-      const stopButton = progressPanel.querySelector('button[onclick="stopRecording"]');
+      const stopButton = progressPanel.querySelector('button');
       const closeButton = document.getElementById('close-button');
-      if (stopButton) stopButton.style.display = 'none';
-      if (closeButton) closeButton.style.display = 'block';
+      if (stopButton && stopButton.textContent === 'Stop') {
+        stopButton.style.display = 'none';
+      }
+      if (closeButton) {
+        closeButton.style.display = 'block';
+      }
       
       // Show download button
       const downloadContainer = document.getElementById('download-container');
