@@ -183,8 +183,35 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   
   else if (message.action === 'recordingComplete') {
-    removeProgressPanel();
-    showNotification('Transcript recording complete! Click the extension icon to download.');
+    // Update UI to show completed state
+    const recordingStatus = document.getElementById('recording-status-badge');
+    if (recordingStatus) {
+      recordingStatus.textContent = '✓ Complete';
+      recordingStatus.style.color = '#4caf50';
+    }
+    
+    // Hide stop button, show close button
+    const stopButton = progressPanel.querySelector('button[onclick="stopRecording"]');
+    const closeButton = document.getElementById('close-button');
+    if (stopButton) stopButton.style.display = 'none';
+    if (closeButton) closeButton.style.display = 'block';
+    
+    // Show download button
+    const downloadContainer = document.getElementById('download-container');
+    if (downloadContainer) {
+      downloadContainer.style.display = 'block';
+    }
+    
+    // Update status and simplify display
+    updateProgressPanel('Recording complete! You can download the transcripts now.');
+    
+    // Hide detailed progress info
+    const sectionInfo = document.getElementById('progress-section');
+    const lectureInfo = document.getElementById('progress-lecture');
+    if (sectionInfo) sectionInfo.style.display = 'none';
+    if (lectureInfo) lectureInfo.style.display = 'none';
+    
+    showNotification('Transcript recording complete!');
     sendResponse({ success: true });
     return true;
   }
@@ -1039,7 +1066,7 @@ function createProgressPanel() {
   progressPanel.style.position = 'fixed';
   progressPanel.style.bottom = '20px';
   progressPanel.style.right = '20px';
-  progressPanel.style.width = '300px';
+  progressPanel.style.width = '400px';
   progressPanel.style.backgroundColor = 'white';
   progressPanel.style.borderRadius = '8px';
   progressPanel.style.boxShadow = '0 2px 10px rgba(0, 0, 0, 0.2)';
@@ -1053,10 +1080,28 @@ function createProgressPanel() {
   header.style.alignItems = 'center';
   header.style.marginBottom = '10px';
   
+  const titleContainer = document.createElement('div');
+  titleContainer.style.display = 'flex';
+  titleContainer.style.alignItems = 'center';
+  titleContainer.style.gap = '10px';
+  
   const title = document.createElement('h3');
   title.textContent = 'Transcript Recorder';
   title.style.margin = '0';
   title.style.color = '#a435f0';
+  
+  const recordingStatus = document.createElement('span');
+  recordingStatus.id = 'recording-status-badge';
+  recordingStatus.textContent = '● Recording';
+  recordingStatus.style.color = '#4caf50';
+  recordingStatus.style.fontSize = '14px';
+  
+  titleContainer.appendChild(title);
+  titleContainer.appendChild(recordingStatus);
+  
+  const buttonContainer = document.createElement('div');
+  buttonContainer.style.display = 'flex';
+  buttonContainer.style.gap = '10px';
   
   const stopButton = document.createElement('button');
   stopButton.textContent = 'Stop';
@@ -1068,8 +1113,23 @@ function createProgressPanel() {
   stopButton.style.cursor = 'pointer';
   stopButton.onclick = stopRecording;
   
-  header.appendChild(title);
-  header.appendChild(stopButton);
+  const closeButton = document.createElement('button');
+  closeButton.textContent = '✕';
+  closeButton.style.backgroundColor = 'transparent';
+  closeButton.style.color = '#757575';
+  closeButton.style.border = 'none';
+  closeButton.style.borderRadius = '4px';
+  closeButton.style.padding = '5px 10px';
+  closeButton.style.cursor = 'pointer';
+  closeButton.style.display = 'none'; // Initially hidden
+  closeButton.id = 'close-button';
+  closeButton.onclick = removeProgressPanel;
+  
+  buttonContainer.appendChild(stopButton);
+  buttonContainer.appendChild(closeButton);
+  
+  header.appendChild(titleContainer);
+  header.appendChild(buttonContainer);
   
   const content = document.createElement('div');
   content.id = 'progress-content';
@@ -1129,6 +1189,26 @@ function createProgressPanel() {
   content.appendChild(progressTextDiv);
   content.appendChild(progressBarContainer);
   
+  // Add download button container (initially hidden)
+  const downloadContainer = document.createElement('div');
+  downloadContainer.id = 'download-container';
+  downloadContainer.style.display = 'none';
+  downloadContainer.style.marginTop = '15px';
+  
+  const downloadButton = document.createElement('button');
+  downloadButton.textContent = 'Download Transcripts';
+  downloadButton.style.backgroundColor = '#4caf50';
+  downloadButton.style.color = 'white';
+  downloadButton.style.border = 'none';
+  downloadButton.style.borderRadius = '4px';
+  downloadButton.style.padding = '8px 15px';
+  downloadButton.style.cursor = 'pointer';
+  downloadButton.style.width = '100%';
+  downloadButton.onclick = downloadTranscripts;
+  
+  downloadContainer.appendChild(downloadButton);
+  content.appendChild(downloadContainer);
+  
   // Add attribution
   const attribution = document.createElement('div');
   attribution.style.textAlign = 'center';
@@ -1183,8 +1263,73 @@ function removeProgressPanel() {
 function stopRecording() {
   chrome.runtime.sendMessage({ action: 'stopRecording' }, (response) => {
     if (response && response.success) {
-      showNotification('Transcript recording stopped by user.');
-      removeProgressPanel();
+      showNotification('Transcript recording stopped.');
+      
+      // Update UI to show stopped state
+      const recordingStatus = document.getElementById('recording-status-badge');
+      if (recordingStatus) {
+        recordingStatus.textContent = '◉ Stopped';
+        recordingStatus.style.color = '#757575';
+      }
+      
+      // Hide stop button, show close button
+      const stopButton = progressPanel.querySelector('button[onclick="stopRecording"]');
+      const closeButton = document.getElementById('close-button');
+      if (stopButton) stopButton.style.display = 'none';
+      if (closeButton) closeButton.style.display = 'block';
+      
+      // Show download button
+      const downloadContainer = document.getElementById('download-container');
+      if (downloadContainer) {
+        downloadContainer.style.display = 'block';
+      }
+      
+      // Update status and simplify display
+      updateProgressPanel('Recording stopped. You can download the transcripts now.');
+      
+      // Hide detailed progress info
+      const sectionInfo = document.getElementById('progress-section');
+      const lectureInfo = document.getElementById('progress-lecture');
+      if (sectionInfo) sectionInfo.style.display = 'none';
+      if (lectureInfo) lectureInfo.style.display = 'none';
+    }
+  });
+}
+
+// Download transcripts function
+function downloadTranscripts() {
+  chrome.storage.local.get(['transcriptData'], function(result) {
+    if (chrome.runtime.lastError) {
+      showNotification('Error accessing transcript data: ' + chrome.runtime.lastError.message);
+      return;
+    }
+    
+    if (result.transcriptData && Object.keys(result.transcriptData).length > 0) {
+      // Format transcript data
+      let transcriptText = '';
+      for (const section in result.transcriptData) {
+        transcriptText += `\n\n=== ${section} ===\n\n`;
+        for (const lecture in result.transcriptData[section]) {
+          transcriptText += `\n--- ${lecture} ---\n\n`;
+          const transcript = result.transcriptData[section][lecture];
+          transcriptText += transcript.join('\n') + '\n';
+        }
+      }
+      
+      // Create blob and download
+      const blob = new Blob([transcriptText], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'udemy_transcript.txt';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      
+      showNotification('Transcript download started!');
+    } else {
+      showNotification('No transcript data available to download.');
     }
   });
 }
