@@ -49,7 +49,3 @@ This extension:
 ## License
 
 MIT
-
-## Icons
-
-The extension currently uses placeholder icons. For a production version, you should replace them with custom icons. 
