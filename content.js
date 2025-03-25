@@ -229,6 +229,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
+// Helper function to wait for section expansion
+async function waitForSectionExpansion(section, maxWaitTime = 5000) {
+  const startTime = Date.now();
+  
+  while (Date.now() - startTime < maxWaitTime) {
+    // Look for any element with class containing 'accordion-panel'
+    const panel = section.querySelector('button.js-panel-toggler');
+    if (panel) {
+      // Check if it's expanded either through aria-hidden or aria-expanded
+      const isExpanded = panel.getAttribute('aria-expanded') === 'true';
+      
+      if (isExpanded) {
+        return true;
+      }
+    }
+    
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  return false;
+}
+
 // Extract course structure from the sidebar
 async function extractCourseStructure() {
   console.log('Starting course structure extraction...');
@@ -272,31 +293,12 @@ async function extractCourseStructure() {
     // Get sections with better selector options - use multiple selectors for different Udemy UI versions
     console.log('Looking for course sections...');
     const sections = document.querySelectorAll(
-      '[data-purpose^="section-panel-"], ' +
-      '.ud-accordion-panel, ' +
-      '[data-purpose="curriculum-section"], ' +
-      'div[data-purpose="section-container"], ' +
-      '.curriculum-item-container'
+      '[data-purpose^="section-panel-"]'
     );
     
     if (!sections || sections.length === 0) {
       console.error('No sections found with primary selectors');
-      // Try a different approach - look for any section-like elements
-      const possibleSections = document.querySelectorAll(
-        'div[id^="section-"], ' +
-        'div[class*="section--"], ' + 
-        'div[class*="chapter--"], ' +
-        '[data-purpose*="section"]'
-      );
-      
-      if (possibleSections && possibleSections.length > 0) {
-        console.log('Found alternative sections:', possibleSections.length);
-        
-        // Try to use these alternative sections
-        return processAlternativeSections(possibleSections);
-      } else {
-        throw new Error('No course sections found. The page structure may have changed.');
-      }
+      throw new Error('No course sections found. The page structure may have changed.');
     }
     
     console.log(`Found ${sections.length} course sections`);
@@ -305,15 +307,11 @@ async function extractCourseStructure() {
     for (const section of sections) {
       try {
         const toggleBtn = section.querySelector(
-          'button.js-panel-toggler, ' +
-          '[aria-expanded], ' +
-          '.ud-accordion-panel-toggler, ' + 
-          'button[aria-label*="Expand"], ' +
-          'button[data-purpose*="toggle"]'
+          'button.js-panel-toggler'
         );
         
         if (!toggleBtn) {
-          console.log('No toggle button found for a section, may already be expanded');
+          console.log(`No toggle button found for a section ${section.innerText.trim()}, may already be expanded`);
           continue;
         }
         
@@ -322,8 +320,11 @@ async function extractCourseStructure() {
         if (!isExpanded) {
           console.log('Expanding a collapsed section...');
           toggleBtn.click();
-          // Wait for the animation to complete
-          await new Promise(resolve => setTimeout(resolve, 1000));
+          // Wait for the section to expand
+          const expanded = await waitForSectionExpansion(section);
+          if (!expanded) {
+            console.warn('Section did not expand within timeout');
+          }
         }
       } catch (err) {
         console.warn('Error expanding section:', err);
@@ -392,20 +393,49 @@ async function extractCourseStructure() {
         
         console.log(`Section "${finalSectionTitle}" has ${lectures.length} items`);
         
-        // If we got nothing, try a more aggressive approach
-        if (lectures.length === 0) {
-          console.warn(`No lectures found in section "${finalSectionTitle}" - trying alternative selectors`);
+        // If we got nothing, retry the original approach up to 3 times
+        let retryCount = 0;
+        const MAX_RETRIES = 3;
+        
+        while (lectures.length === 0 && retryCount < MAX_RETRIES) {
+          console.warn(`No lectures found in section "${finalSectionTitle}" - retry attempt ${retryCount + 1}/${MAX_RETRIES}`);
           
-          // Look for anything that might be a lecture
-          lectures = Array.from(
-            section.querySelectorAll('li, [class*="lecture"], [class*="lesson"], a[href*="lecture"]')
+          // Wait a bit before retrying
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          
+          // Ensure section is expanded
+          const toggleBtn = section.querySelector(
+            'button.js-panel-toggler, ' +
+            '[aria-expanded], ' +
+            '.ud-accordion-panel-toggler, ' + 
+            'button[aria-label*="Expand"], ' +
+            'button[data-purpose*="toggle"]'
           );
           
-          console.log(`Alternative selectors found ${lectures.length} potential lectures`);
+          if (toggleBtn && toggleBtn.getAttribute('aria-expanded') === 'false') {
+            console.log('Section appears collapsed, expanding before retry...');
+            toggleBtn.click();
+            await waitForSectionExpansion(section);
+          }
+          
+          // Retry the original query
+          lectures = Array.from(
+            section.querySelectorAll(
+              '[data-purpose^="curriculum-item-"], ' +
+              '.ud-block-list-item, ' +
+              '.curriculum-item-link, ' +
+              'div[class*="item--"], ' +
+              '[data-purpose*="lecture"], ' +
+              '[id^="lecture-"]'
+            )
+          );
+          
+          console.log(`Retry ${retryCount + 1} found ${lectures.length} items`);
+          retryCount++;
         }
         
         if (lectures.length === 0) {
-          console.warn(`No lectures found in section "${finalSectionTitle}" - may be a formatting issue`);
+          console.warn(`No lectures found in section "${finalSectionTitle}" after ${MAX_RETRIES} retries`);
         }
         
         const lectureData = lectures.map(lecture => {
