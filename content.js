@@ -13,17 +13,33 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'getCourseStructure') {
     console.log('Received getCourseStructure request');
     
-    // Check if we're on a course page
-    const courseIdMatch = window.location.href.match(/\/course\/(\d+)/);
-    if (!courseIdMatch || !courseIdMatch[1]) {
-      console.error('Not on a Udemy course page');
-      sendResponse({ success: false, error: 'Could not find Course ID in the URL. Please navigate to a course page.' });
+    // Find the div containing the course data payload
+    const appLoaderDiv = document.querySelector('div[data-module-id="course-taking"]');
+    if (!appLoaderDiv) {
+      sendResponse({ success: false, error: 'Could not find the course data element on the page. Please ensure you are on a course lecture page.' });
       return true;
     }
-    const courseId = courseIdMatch[1];
-    console.log('Found Course ID:', courseId);
+
+    const moduleArgs = appLoaderDiv.getAttribute('data-module-args');
+    let courseId = null;
+    if (moduleArgs) {
+        try {
+            const data = JSON.parse(moduleArgs);
+            courseId = data.courseId;
+        } catch (e) {
+            sendResponse({ success: false, error: 'Failed to parse course data from the page.' });
+            return true;
+        }
+    }
     
-    // Create progress panel
+    if (!courseId) {
+        sendResponse({ success: false, error: 'Course ID not found in the page data.' });
+        return true;
+    }
+
+    console.log('Found Course ID from page data:', courseId);
+
+    // Create progress panel and respond
     createProgressPanel();
     updateProgressPanel('Fetching course curriculum...');
     
