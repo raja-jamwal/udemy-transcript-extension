@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Udemy Full Transcript Extractor for LLMs",
-  "version": "1.0",
+  "version": "2.0",
   "description": "Enhance your learning experience by using the transcripts with popular AI tools like NoteLLM, ChatGPT, Gemini, Claude, and more.",
   "permissions": ["storage", "tabs"],
   "host_permissions": ["https://*.udemy.com/*"],
