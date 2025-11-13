@@ -2,16 +2,11 @@
 let recordingState = {
   isRecording: false,
   courseTab: null,
-  courseData: null,
-  currentSectionIndex: 0,
-  currentLectureIndex: 0,
-  processedLectures: {},
+  courseData: null, // Will now store API response
   transcriptData: {},
   errorCount: 0,
   maxErrors: 5,
-  lastError: null,
-  currentSectionTitle: '',
-  navigationHistory: []
+  lastError: null
 };
 
 // Clear previous state on extension install/update
@@ -60,151 +55,37 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     recordingState.errorCount = 0;
     recordingState.lastError = null;
     
-    console.log('Starting recording process on tab:', recordingState.courseTab);
-    
-    // Send message to content script to gather course structure
-    try {
-      chrome.tabs.sendMessage(recordingState.courseTab, { action: 'getCourseStructure' }, (response) => {
-        // Check for chrome runtime error
+    // Ask content script ONLY for the course ID
+    chrome.tabs.sendMessage(recordingState.courseTab, { action: 'getCourseStructure' }, (response) => {
         if (chrome.runtime.lastError) {
-          const error = `Chrome error: ${chrome.runtime.lastError.message}`;
-          console.error(error);
-          recordingState.isRecording = false;
-          recordingState.lastError = error;
-          sendResponse({ success: false, error: error });
-          return;
-        }
-        
-        // Check response
-        if (response && response.success) {
-          recordingState.courseData = response.courseData;
-          console.log('Received course structure:', recordingState.courseData);
-          
-          // Validate course data
-          if (!recordingState.courseData || !Array.isArray(recordingState.courseData) || recordingState.courseData.length === 0) {
-            const error = 'Invalid or empty course structure received';
-            console.error(error);
-            recordingState.isRecording = false;
-            recordingState.lastError = error;
-            sendResponse({ success: false, error: error });
+            const error = `Error communicating with content script: ${chrome.runtime.lastError.message}`;
+            stopRecording(error);
+            sendResponse({ success: false, error });
             return;
-          }
-          
-          // Log course structure for debugging
-          console.log('Course structure summary:');
-          for (let i = 0; i < recordingState.courseData.length; i++) {
-            const section = recordingState.courseData[i];
-            console.log(`Section ${i+1}: ${section.section} - ${section.lectures.length} lectures`);
-          }
-          
-          processNextLecture();
-          sendResponse({ success: true });
-        } else {
-          const error = response?.error || 'Failed to get course structure';
-          console.error('Failed to get course structure:', error);
-          recordingState.isRecording = false;
-          recordingState.lastError = error;
-          sendResponse({ success: false, error: error });
         }
-      });
-    } catch (err) {
-      const error = `Exception sending message: ${err.message}`;
-      console.error(error);
-      recordingState.isRecording = false;
-      recordingState.lastError = error;
-      sendResponse({ success: false, error: error });
-    }
+        if (response && response.success) {
+            const courseId = response.courseId;
+            // Start the new API-based process
+            fetchCourseCurriculum(courseId)
+                .then(courseData => {
+                    recordingState.courseData = courseData;
+                    console.log(`Found ${courseData.sections.length} sections and ${courseData.lectures.length} total lectures.`);
+                    processLectures(courseId, courseData); // Start processing the lectures
+                    sendResponse({ success: true });
+                })
+                .catch(error => {
+                    console.error('Failed to fetch course curriculum:', error);
+                    stopRecording(error.message);
+                    sendResponse({ success: false, error: error.message });
+                });
+        } else {
+            const error = response?.error || 'Failed to get Course ID from content script.';
+            stopRecording(error);
+            sendResponse({ success: false, error });
+        }
+    });
     
     return true; // Keep the message channel open for async response
-  }
-  
-  else if (message.action === 'transcriptCaptured') {
-    // Save captured transcript data
-    if (recordingState.isRecording) {
-      const { sectionTitle, lectureTitle, transcript } = message;
-      
-      // Log the transcript receipt
-      console.log(`Received transcript for "${sectionTitle} - ${lectureTitle}"`);
-      console.log(`Transcript length: ${transcript.length} lines`);
-      
-      // Store section title for better tracking
-      if (sectionTitle) {
-        recordingState.currentSectionTitle = sectionTitle;
-      }
-      
-      // Make sure we have the latest transcriptData from storage before updating
-      chrome.storage.local.get(['transcriptData'], (result) => {
-        let currentData = result.transcriptData || {};
-        
-        // Initialize section if it doesn't exist
-        if (!currentData[sectionTitle]) {
-          currentData[sectionTitle] = {};
-          console.log(`Created new section in storage: "${sectionTitle}"`);
-        }
-        
-        // Save transcript for this lecture
-        currentData[sectionTitle][lectureTitle] = transcript;
-        
-        // Update local state and storage
-        recordingState.transcriptData = currentData;
-        chrome.storage.local.set({ transcriptData: currentData }, () => {
-          console.log(`Saved transcript for ${sectionTitle} - ${lectureTitle}`);
-          
-          // Output detailed storage info for debugging
-          let sectionCount = Object.keys(currentData).length;
-          let totalLectures = 0;
-          
-          for (const sect in currentData) {
-            const lectureCount = Object.keys(currentData[sect]).length;
-            totalLectures += lectureCount;
-            console.log(`  Section "${sect}": ${lectureCount} lectures`);
-          }
-          
-          console.log(`Storage now has ${sectionCount} sections with ${totalLectures} total lectures`);
-          
-          // Mark as processed
-          const key = `${sectionTitle}:${lectureTitle}`;
-          recordingState.processedLectures[key] = true;
-          
-          // Reset error count on successful capture
-          recordingState.errorCount = 0;
-          
-          // Process next lecture
-          recordingState.currentLectureIndex++;
-          processNextLecture();
-        });
-      });
-      
-      sendResponse({ success: true });
-    } else {
-      sendResponse({ success: false, error: 'Not currently recording' });
-    }
-    
-    return true;
-  }
-  
-  else if (message.action === 'processingError') {
-    // Handle error during processing
-    if (recordingState.isRecording) {
-      recordingState.errorCount++;
-      console.log(`Processing error: ${message.error}. Error count: ${recordingState.errorCount}`);
-      
-      // Check if we should stop due to too many errors
-      if (recordingState.errorCount >= recordingState.maxErrors) {
-        console.error(`Too many errors (${recordingState.errorCount}). Stopping recording process.`);
-        stopRecording('Too many consecutive errors');
-        sendResponse({ success: false, stopped: true });
-      } else {
-        // Move to next lecture and continue
-        recordingState.currentLectureIndex++;
-        processNextLecture();
-        sendResponse({ success: true, continued: true });
-      }
-    } else {
-      sendResponse({ success: false, error: 'Not currently recording' });
-    }
-    
-    return true;
   }
   
   else if (message.action === 'stopRecording') {
@@ -217,11 +98,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   else if (message.action === 'getRecordingStatus') {
     sendResponse({
       isRecording: recordingState.isRecording,
-      currentSectionIndex: recordingState.currentSectionIndex,
-      currentLectureIndex: recordingState.currentLectureIndex,
-      currentSectionTitle: recordingState.currentSectionTitle || '',
-      courseTab: recordingState.courseTab,
-      courseData: recordingState.courseData, // Include course data for navigation
       errorCount: recordingState.errorCount,
       lastError: recordingState.lastError
     });
@@ -235,217 +111,171 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     });
     return true;
   }
-  
-  else if (message.action === 'forceNextLecture') {
-    // Emergency recovery - force moving to the next lecture
-    console.log('Received forceNextLecture request - emergency recovery');
-    
-    if (!recordingState.isRecording) {
-      console.log('Not recording, cannot force next lecture');
-      sendResponse({ success: false, error: 'Not currently recording' });
-      return true;
-    }
-    
-    // Increment lecture index and try to continue
-    recordingState.currentLectureIndex++;
-    recordingState.errorCount++;
-    
-    console.log(`Forced moving to next lecture. Now at section ${recordingState.currentSectionIndex + 1}, lecture ${recordingState.currentLectureIndex + 1}`);
-    console.log(`Error count: ${recordingState.errorCount}/${recordingState.maxErrors}`);
-    
-    // If too many errors, stop recording
-    if (recordingState.errorCount >= recordingState.maxErrors) {
-      console.error(`Too many consecutive errors (${recordingState.errorCount}). Stopping recording.`);
-      stopRecording('Too many consecutive errors');
-      sendResponse({ success: false, stopped: true });
-    } else {
-      // Try to continue with next lecture
-      setTimeout(() => {
-        processNextLecture();
-      }, 2000); // Add a small delay before continuing
-      sendResponse({ success: true });
-    }
-    
-    return true;
-  }
-  
-  // Add a health check endpoint
-  else if (message.action === 'checkRecordingHealth') {
-    // Check if content script is still responsive
-    if (recordingState.isRecording && recordingState.courseTab) {
-      try {
-        chrome.tabs.sendMessage(recordingState.courseTab, { action: 'pingContentScript' }, (response) => {
-          if (chrome.runtime.lastError || !response || !response.alive) {
-            console.error('Content script health check failed:', chrome.runtime.lastError || 'No response');
-            sendResponse({ healthy: false, error: 'Content script not responding' });
-          } else {
-            sendResponse({ healthy: true });
-          }
-        });
-      } catch (err) {
-        console.error('Error checking content script health:', err);
-        sendResponse({ healthy: false, error: err.message });
-      }
-      return true;
-    } else {
-      sendResponse({ healthy: !recordingState.isRecording, notRecording: true });
-      return true;
-    }
-  }
 });
 
-// Navigate to the next lecture to process
-function processNextLecture() {
-  if (!recordingState.isRecording || !recordingState.courseData) {
-    console.log('Not recording or no course data available');
-    return;
-  }
-  
-  const sections = recordingState.courseData;
-  
-  // Check if we've processed all sections
-  if (recordingState.currentSectionIndex >= sections.length) {
-    console.log('All sections processed. Finishing recording.');
-    finishRecording();
-    return;
-  }
-  
-  const currentSection = sections[recordingState.currentSectionIndex];
-  
-  // Update current section title for tracking
-  recordingState.currentSectionTitle = currentSection.section;
-  
-  // Check if we've processed all lectures in this section
-  if (recordingState.currentLectureIndex >= currentSection.lectures.length) {
-    // Move to next section
-    console.log(`Finished section ${recordingState.currentSectionIndex + 1} "${currentSection.section}". Moving to next section.`);
-    recordingState.currentSectionIndex++;
-    recordingState.currentLectureIndex = 0;
-    
-    // Reset error count when moving to a new section
-    recordingState.errorCount = 0;
-    
-    processNextLecture();
-    return;
-  }
-  
-  const currentLecture = currentSection.lectures[recordingState.currentLectureIndex];
-  const key = `${currentSection.section}:${currentLecture.title}`;
-  
-  // Check if we've already processed this lecture
-  if (recordingState.processedLectures[key]) {
-    console.log(`Lecture already processed: ${key}. Skipping.`);
-    recordingState.currentLectureIndex++;
-    processNextLecture();
-    return;
-  }
-  
-  // Track which lecture we're currently processing
-  if (!recordingState.navigationHistory) {
-    recordingState.navigationHistory = [];
-  }
-  
-  // Check for repeated navigation to same lecture
-  const isRepeatedNavigation = recordingState.navigationHistory.length > 5 && 
-    recordingState.navigationHistory.slice(-5).every(item => 
-      item.sectionIndex === recordingState.currentSectionIndex && 
-      item.lectureIndex === recordingState.currentLectureIndex
-    );
-  
-  if (isRepeatedNavigation) {
-    console.warn('Detected repeated navigation to the same lecture. Forcing move to next lecture.');
-    recordingState.currentLectureIndex++;
-    processNextLecture();
-    return;
-  }
-  
-  // Add to navigation history
-  recordingState.navigationHistory.push({
-    sectionIndex: recordingState.currentSectionIndex,
-    lectureIndex: recordingState.currentLectureIndex,
-    timestamp: Date.now()
-  });
-  
-  // Trim history to last 100 entries
-  if (recordingState.navigationHistory.length > 100) {
-    recordingState.navigationHistory = recordingState.navigationHistory.slice(-100);
-  }
-  
-  console.log(`Processing lecture: Section ${recordingState.currentSectionIndex + 1}, Lecture ${recordingState.currentLectureIndex + 1}`);
-  console.log(`Section: "${currentSection.section}", Lecture: "${currentLecture.title}"`);
-  
-  // Send message to content script to navigate to this lecture
-  try {
-    chrome.tabs.sendMessage(recordingState.courseTab, {
-      action: 'navigateToLecture',
-      sectionIndex: recordingState.currentSectionIndex,
-      lectureIndex: recordingState.currentLectureIndex
-    }, (response) => {
-      // Check for runtime errors first
-      if (chrome.runtime.lastError) {
-        console.error('Chrome runtime error:', chrome.runtime.lastError.message);
-        handleLectureNavigationError(chrome.runtime.lastError.message);
-        return;
-      }
-      
-      if (response && response.success) {
-        // Content script will handle navigation and transcript extraction
-        // It will send back a 'transcriptCaptured' message when done
-        console.log('Navigation request sent successfully');
+// New function to fetch the entire course curriculum
+async function fetchCourseCurriculum(courseId) {
+    const pageSize = 200; // Udemy seems to use a page size of 200
+    let page = 1;
+    let results = [];
+    let hasMore = true;
+
+    while (hasMore) {
+        const apiUrl = `https://www.udemy.com/api-2.0/courses/${courseId}/subscriber-curriculum-items/?curriculum_types=chapter,lecture&page_size=${pageSize}&page=${page}&fields[lecture]=title,object_index,id&fields[chapter]=title,object_index`;
         
-        // Set up watchdog timer - if we don't get a response within 3 minutes, assume something went wrong
-        setTimeout(() => {
-          // Only check if we're still recording and still on the same lecture
-          if (recordingState.isRecording && 
-              recordingState.currentSectionIndex === recordingState.navigationHistory[recordingState.navigationHistory.length - 1].sectionIndex &&
-              recordingState.currentLectureIndex === recordingState.navigationHistory[recordingState.navigationHistory.length - 1].lectureIndex) {
-            
-            console.log('Watchdog triggered - checking content script status');
-            
-            chrome.tabs.sendMessage(recordingState.courseTab, { action: 'pingContentScript' }, (pingResponse) => {
-              if (chrome.runtime.lastError || !pingResponse) {
-                console.error('Watchdog triggered - no response from content script');
-                // Force moving to next lecture
-                recordingState.errorCount++;
-                recordingState.currentLectureIndex++;
-                processNextLecture();
-              } else {
-                console.log('Content script responsive but taking too long, forcing move to next lecture');
-                recordingState.currentLectureIndex++;
-                processNextLecture();
-              }
-            });
-          }
-        }, 180000); // 3 minutes
-      } else {
-        console.error('Failed to navigate to lecture:', response?.error);
-        handleLectureNavigationError(response?.error || 'Unknown navigation error');
-      }
-    });
-  } catch (err) {
-    console.error('Exception sending navigation message:', err);
-    handleLectureNavigationError(err.message);
-  }
+        const response = await fetch(apiUrl, {
+            headers: { 'Accept': 'application/json, text/plain, */*' }
+        });
+
+        if (!response.ok) {
+            throw new Error(`API request failed with status ${response.status}`);
+        }
+
+        const data = await response.json();
+        results = results.concat(data.results);
+        
+        hasMore = !!data.next; // Check if there is a 'next' page URL
+        page++;
+    }
+
+    // Process the flat list into structured data
+    const courseData = { sections: [], lectures: [] };
+    let currentSection = { section: 'Course Introduction', lectures: [] };
+
+    results.sort((a, b) => a.object_index - b.object_index); // Ensure correct order
+
+    for (const item of results) {
+        if (item._class === 'chapter') {
+            // Save the previous section if it has lectures
+            if (currentSection.lectures.length > 0) {
+                courseData.sections.push(currentSection);
+            }
+            currentSection = { section: item.title, lectures: [] };
+        } else if (item._class === 'lecture') {
+            const lectureInfo = {
+                id: item.id,
+                title: item.title,
+                section: currentSection.section
+            };
+            currentSection.lectures.push(lectureInfo);
+            courseData.lectures.push(lectureInfo);
+        }
+    }
+    // Add the last section
+    if (currentSection.lectures.length > 0) {
+        courseData.sections.push(currentSection);
+    }
+
+    return courseData;
 }
 
-// Helper function to handle lecture navigation errors
-function handleLectureNavigationError(errorMessage) {
-  // Handle error and move to next lecture
-  recordingState.errorCount++;
-  
-  // If too many consecutive errors, stop recording
-  if (recordingState.errorCount >= recordingState.maxErrors) {
-    console.error(`Too many consecutive errors (${recordingState.errorCount}). Stopping recording.`);
-    stopRecording('Too many consecutive errors');
-  } else {
-    console.log(`Moving to next lecture after error. Error count: ${recordingState.errorCount}`);
-    recordingState.currentLectureIndex++;
+// New main processing loop
+async function processLectures(courseId, courseData) {
+    const totalLectures = courseData.lectures.length;
+    let processedCount = 0;
+
+    for (const lecture of courseData.lectures) {
+        if (!recordingState.isRecording) {
+            console.log('Recording stopped, halting lecture processing.');
+            break;
+        }
+
+        try {
+            const transcript = await fetchTranscriptForLecture(courseId, lecture.id);
+            
+            // Save the transcript
+            const { section, title } = lecture;
+            if (!recordingState.transcriptData[section]) {
+                recordingState.transcriptData[section] = {};
+            }
+            recordingState.transcriptData[section][title] = transcript;
+            chrome.storage.local.set({ transcriptData: recordingState.transcriptData });
+
+            processedCount++;
+            console.log(`[${processedCount}/${totalLectures}] Successfully processed: ${title}`);
+
+            // Send progress update to content script
+            chrome.tabs.sendMessage(recordingState.courseTab, {
+                action: 'updateProgress',
+                sectionTitle: section,
+                lectureTitle: title,
+                processedCount: processedCount,
+                totalCount: totalLectures
+            });
+
+        } catch (error) {
+            console.error(`Failed to process lecture ${lecture.title}:`, error);
+            recordingState.errorCount++;
+            if (recordingState.errorCount >= recordingState.maxErrors) {
+                stopRecording('Too many consecutive errors.');
+                break;
+            }
+        }
+        
+        // Add a small delay to avoid overwhelming the API
+        await new Promise(resolve => setTimeout(resolve, 500)); // 0.5 second delay
+    }
+
+    if (recordingState.isRecording) {
+        finishRecording();
+    }
+}
+
+// New function to fetch a single transcript
+async function fetchTranscriptForLecture(courseId, lectureId) {
+    const lectureApiUrl = `https://www.udemy.com/api-2.0/users/me/subscribed-courses/${courseId}/lectures/${lectureId}/?fields[asset]=captions`;
     
-    // Add small delay before moving to next lecture
-    setTimeout(() => {
-      processNextLecture();
-    }, 1000);
-  }
+    const response = await fetch(lectureApiUrl, {
+        headers: { 'Accept': 'application/json, text/plain, */*' }
+    });
+
+    if (!response.ok) throw new Error(`Lecture API failed with status ${response.status}`);
+    
+    const data = await response.json();
+    const captions = data?.asset?.captions;
+
+    if (!captions || captions.length === 0) {
+        return ['[No transcript available for this lecture]'];
+    }
+
+    // Find the English caption URL
+    let vttUrl = captions.find(c => c.locale_id === 'en_US')?.url
+              || captions.find(c => c.locale_id === 'en_GB')?.url
+              || captions.find(c => c.locale_id.startsWith('en'))?.url;
+
+    if (!vttUrl) {
+        return ['[No English transcript found for this lecture]'];
+    }
+
+    const vttResponse = await fetch(vttUrl);
+    if (!vttResponse.ok) throw new Error(`VTT fetch failed with status ${vttResponse.status}`);
+    
+    const vttText = await vttResponse.text();
+    return parseVtt(vttText);
+}
+
+// New VTT parsing helper
+function parseVtt(vttContent) {
+    const lines = vttContent.split('\n');
+    const transcriptLines = [];
+    for (const line of lines) {
+        // Skip metadata lines
+        if (line.startsWith('WEBVTT') || line.includes('-->') || line.trim() === '') {
+            continue;
+        }
+        // Remove cue identifiers like <v Roger Bingham>
+        transcriptLines.push(line.replace(/<[^>]+>/g, '').trim());
+    }
+    // Join lines that might have been split and remove duplicates
+    const uniqueLines = [];
+    let previousLine = '';
+    for(const line of transcriptLines) {
+        if (line !== previousLine) {
+            uniqueLines.push(line);
+            previousLine = line;
+        }
+    }
+    return uniqueLines;
 }
 
 // Stop the recording process
@@ -471,9 +301,6 @@ function stopRecording(reason = 'user request') {
   // Reset state but keep transcript data
   recordingState.courseTab = null;
   recordingState.courseData = null;
-  recordingState.currentSectionIndex = 0;
-  recordingState.currentLectureIndex = 0;
-  recordingState.processedLectures = {};
   recordingState.errorCount = 0;
 }
 
@@ -498,7 +325,7 @@ function finishRecording() {
   
   // Check if any sections from the course structure are missing
   if (recordingState.courseData) {
-    for (const section of recordingState.courseData) {
+    for (const section of recordingState.courseData.sections) {
       const sectionTitle = section.section;
       if (!capturedMap[sectionTitle]) {
         missedSections.push(sectionTitle);
@@ -523,10 +350,6 @@ function finishRecording() {
     // Reset state but keep transcript data
     recordingState.courseTab = null;
     recordingState.courseData = null;
-    recordingState.currentSectionIndex = 0;
-    recordingState.currentLectureIndex = 0;
-    recordingState.currentSectionTitle = '';
-    recordingState.processedLectures = {};
     recordingState.errorCount = 0;
   });
-} 
+}
