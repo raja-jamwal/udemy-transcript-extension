@@ -6,7 +6,8 @@ let recordingState = {
   transcriptData: {},
   errorCount: 0,
   maxErrors: 5,
-  lastError: null
+  lastError: null,
+  apiBase: 'https://www.udemy.com' // default; will be overridden per tab
 };
 
 // Clear previous state on extension install/update
@@ -54,6 +55,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     recordingState.courseTab = message.courseTab;
     recordingState.errorCount = 0;
     recordingState.lastError = null;
+    
+    // Derive API base (handles business subdomains)
+    chrome.tabs.get(recordingState.courseTab, (tab) => {
+      try {
+        const url = new URL(tab.url);
+        if (url.hostname.endsWith('udemy.com')) {
+          recordingState.apiBase = `${url.protocol}//${url.hostname}`;
+        } else {
+          recordingState.apiBase = 'https://www.udemy.com';
+        }
+      } catch (e) {
+        recordingState.apiBase = 'https://www.udemy.com';
+      }
+    });
     
     // Ask content script ONLY for the course ID
     chrome.tabs.sendMessage(recordingState.courseTab, { action: 'getCourseStructure' }, (response) => {
@@ -119,9 +134,10 @@ async function fetchCourseCurriculum(courseId) {
     let page = 1;
     let results = [];
     let hasMore = true;
+    const baseUrl = recordingState.apiBase || 'https://www.udemy.com';
 
     while (hasMore) {
-        const apiUrl = `https://www.udemy.com/api-2.0/courses/${courseId}/subscriber-curriculum-items/?curriculum_types=chapter,lecture&page_size=${pageSize}&page=${page}&fields[lecture]=title,object_index,id&fields[chapter]=title,object_index`;
+        const apiUrl = `${baseUrl}/api-2.0/courses/${courseId}/subscriber-curriculum-items/?curriculum_types=chapter,lecture&page_size=${pageSize}&page=${page}&fields[lecture]=title,object_index,id&fields[chapter]=title,object_index`;
         
         const response = await fetch(apiUrl, {
             headers: { 'Accept': 'application/json, text/plain, */*' }
@@ -223,7 +239,8 @@ async function processLectures(courseId, courseData) {
 
 // New function to fetch a single transcript
 async function fetchTranscriptForLecture(courseId, lectureId) {
-    const lectureApiUrl = `https://www.udemy.com/api-2.0/users/me/subscribed-courses/${courseId}/lectures/${lectureId}/?fields[asset]=captions`;
+    const baseUrl = recordingState.apiBase || 'https://www.udemy.com';
+    const lectureApiUrl = `${baseUrl}/api-2.0/users/me/subscribed-courses/${courseId}/lectures/${lectureId}/?fields[asset]=captions`;
     
     const response = await fetch(lectureApiUrl, {
         headers: { 'Accept': 'application/json, text/plain, */*' }
