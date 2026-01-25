@@ -349,6 +349,16 @@ function stopRecording() {
   });
 }
 
+// Helper to get transcript from lecture data (handles both old and new format)
+function getTranscript(lectureData) {
+  // New format: { sectionIndex, lectureIndex, transcript }
+  if (lectureData && lectureData.transcript !== undefined) {
+    return lectureData.transcript;
+  }
+  // Old format: transcript is the array directly
+  return lectureData;
+}
+
 // Download transcripts function
 function downloadTranscripts() {
   chrome.storage.local.get(['transcriptData'], function(result) {
@@ -356,7 +366,7 @@ function downloadTranscripts() {
       showNotification('Error accessing transcript data: ' + chrome.runtime.lastError.message);
       return;
     }
-    
+
     if (result.transcriptData && Object.keys(result.transcriptData).length > 0) {
       // Format transcript data
       let transcriptText = '';
@@ -364,7 +374,7 @@ function downloadTranscripts() {
         transcriptText += `\n\n=== ${section} ===\n\n`;
         for (const lecture in result.transcriptData[section]) {
           transcriptText += `\n--- ${lecture} ---\n\n`;
-          const transcript = result.transcriptData[section][lecture];
+          const transcript = getTranscript(result.transcriptData[section][lecture]);
           transcriptText += transcript.join('\n') + '\n';
         }
       }
