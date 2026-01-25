@@ -204,14 +204,16 @@ async function processLectures(courseId, courseData) {
             processedCount++;
             console.log(`[${processedCount}/${totalLectures}] Successfully processed: ${title}`);
 
-            // Send progress update to content script
-            chrome.tabs.sendMessage(recordingState.courseTab, {
-                action: 'updateProgress',
-                sectionTitle: section,
-                lectureTitle: title,
-                processedCount: processedCount,
-                totalCount: totalLectures
-            });
+            // Send progress update to content script (only if still recording)
+            if (recordingState.isRecording && recordingState.courseTab) {
+                chrome.tabs.sendMessage(recordingState.courseTab, {
+                    action: 'updateProgress',
+                    sectionTitle: section,
+                    lectureTitle: title,
+                    processedCount: processedCount,
+                    totalCount: totalLectures
+                });
+            }
 
         } catch (error) {
             console.error(`Failed to process lecture ${lecture.title}:`, error);
