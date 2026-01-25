@@ -140,7 +140,9 @@ async function fetchCourseCurriculum(courseId) {
 
     // Process the flat list into structured data
     const courseData = { sections: [], lectures: [] };
-    let currentSection = { section: 'Course Introduction', lectures: [] };
+    let currentSection = { section: 'Course Introduction', sectionIndex: 0, lectures: [] };
+    let sectionIndex = 0;
+    let globalLectureIndex = 0;
 
     results.sort((a, b) => a.object_index - b.object_index); // Ensure correct order
 
@@ -150,13 +152,17 @@ async function fetchCourseCurriculum(courseId) {
             if (currentSection.lectures.length > 0) {
                 courseData.sections.push(currentSection);
             }
-            currentSection = { section: item.title, lectures: [] };
+            sectionIndex++;
+            currentSection = { section: item.title, sectionIndex: sectionIndex, lectures: [] };
         } else if (item._class === 'lecture') {
             const lectureInfo = {
                 id: item.id,
                 title: item.title,
-                section: currentSection.section
+                section: currentSection.section,
+                sectionIndex: currentSection.sectionIndex,
+                lectureIndex: globalLectureIndex
             };
+            globalLectureIndex++;
             currentSection.lectures.push(lectureInfo);
             courseData.lectures.push(lectureInfo);
         }
@@ -183,12 +189,16 @@ async function processLectures(courseId, courseData) {
         try {
             const transcript = await fetchTranscriptForLecture(courseId, lecture.id);
             
-            // Save the transcript
-            const { section, title } = lecture;
+            // Save the transcript with ordering indices
+            const { section, title, sectionIndex, lectureIndex } = lecture;
             if (!recordingState.transcriptData[section]) {
                 recordingState.transcriptData[section] = {};
             }
-            recordingState.transcriptData[section][title] = transcript;
+            recordingState.transcriptData[section][title] = {
+                sectionIndex: sectionIndex,
+                lectureIndex: lectureIndex,
+                transcript: transcript
+            };
             chrome.storage.local.set({ transcriptData: recordingState.transcriptData });
 
             processedCount++;
