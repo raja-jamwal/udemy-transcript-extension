@@ -250,31 +250,32 @@ document.addEventListener('DOMContentLoaded', function() {
     let totalSections = 0;
     let totalLectures = 0;
     let totalLines = 0;
-    
+
     for (const section in data) {
       totalSections++;
       for (const lecture in data[section]) {
         totalLectures++;
-        totalLines += data[section][lecture].length;
+        const transcript = getTranscript(data[section][lecture]);
+        totalLines += transcript ? transcript.length : 0;
       }
     }
     
     
     // Add table of contents
     text += '## Table of Contents\n\n';
-    
-    // Get sorted section list for better organization
+
+    // Get sorted section list using stored indices
     const sectionNames = Object.keys(data);
-    const orderedSections = sortSections(sectionNames);
-    
+    const orderedSections = sortSections(sectionNames, data);
+
     for (const section of orderedSections) {
       if (!data[section]) continue; // Skip empty sections
-      
+
       text += `- [${section}](#${createAnchor(section)})\n`;
-      
-      // Get lectures for this section and sort them if they have numbers
+
+      // Get lectures for this section and sort them using stored indices
       const lectures = Object.keys(data[section]);
-      const sortedLectures = sortLectures(lectures);
+      const sortedLectures = sortLectures(lectures, data[section]);
       
       for (const lecture of sortedLectures) {
         text += `  - [${lecture}](#${createAnchor(lecture)})\n`;
@@ -286,29 +287,29 @@ document.addEventListener('DOMContentLoaded', function() {
     // Add content
     for (const section of orderedSections) {
       if (!data[section]) continue; // Skip empty sections
-      
+
       text += `## ${section} {#${createAnchor(section)}}\n\n`;
-      
+
       const lectures = Object.keys(data[section]);
-      const sortedLectures = sortLectures(lectures);
-      
+      const sortedLectures = sortLectures(lectures, data[section]);
+
       for (const lecture of sortedLectures) {
         // Add lecture title with anchor
         text += `### ${lecture} {#${createAnchor(lecture)}}\n\n`;
-        
-        // Check if transcript has content
-        const transcript = data[section][lecture];
+
+        // Get transcript (handles both old and new data format)
+        const transcript = getTranscript(data[section][lecture]);
         if (!transcript || transcript.length === 0) {
           text += '*No transcript available for this lecture.*\n\n';
           continue;
         }
-        
+
         // Check if transcript contains error messages
-        const isError = transcript.length === 1 && 
-                       (transcript[0].includes('[Error') || 
+        const isError = transcript.length === 1 &&
+                       (transcript[0].includes('[Error') ||
                         transcript[0].includes('[Could not') ||
                         transcript[0].includes('[No transcript'));
-        
+
         if (isError) {
           text += `*${transcript[0]}*\n\n`;
         } else {
@@ -320,7 +321,7 @@ document.addEventListener('DOMContentLoaded', function() {
           text += '```\n\n';
         }
       }
-      
+
       text += '\n';
     }
     
@@ -337,46 +338,75 @@ document.addEventListener('DOMContentLoaded', function() {
       .substring(0, 50);          // Limit length
   }
 
-  // Helper to sort sections naturally (handling numeric prefixes properly)
-  function sortSections(sections) {
+  // Helper to sort sections using stored sectionIndex
+  function sortSections(sections, data) {
     return [...sections].sort((a, b) => {
-      // Extract numeric prefixes if they exist
+      // Get the sectionIndex from the first lecture in each section
+      const aLectures = Object.values(data[a] || {});
+      const bLectures = Object.values(data[b] || {});
+
+      // Extract sectionIndex from the first lecture (if available)
+      const aIndex = aLectures.length > 0 && aLectures[0].sectionIndex !== undefined
+        ? aLectures[0].sectionIndex : null;
+      const bIndex = bLectures.length > 0 && bLectures[0].sectionIndex !== undefined
+        ? bLectures[0].sectionIndex : null;
+
+      // If both have stored indices, use them
+      if (aIndex !== null && bIndex !== null) {
+        return aIndex - bIndex;
+      }
+
+      // Fallback to name-based sorting for backward compatibility
       const aMatch = a.match(/^(\d+)[.\s:)-]+/);
       const bMatch = b.match(/^(\d+)[.\s:)-]+/);
-      
-      // If both have numeric prefixes, sort by number
+
       if (aMatch && bMatch) {
         return parseInt(aMatch[1]) - parseInt(bMatch[1]);
       }
-      
-      // If only one has numeric prefix, it goes first
       if (aMatch) return -1;
       if (bMatch) return 1;
-      
-      // Otherwise alphabetical
+
       return a.localeCompare(b);
     });
   }
 
-  // Helper to sort lectures naturally (handling numeric prefixes properly)
-  function sortLectures(lectures) {
+  // Helper to sort lectures using stored lectureIndex
+  function sortLectures(lectures, sectionData) {
     return [...lectures].sort((a, b) => {
-      // Extract numeric prefixes if they exist
+      // Get the lectureIndex from stored data (if available)
+      const aData = sectionData[a];
+      const bData = sectionData[b];
+
+      const aIndex = aData && aData.lectureIndex !== undefined ? aData.lectureIndex : null;
+      const bIndex = bData && bData.lectureIndex !== undefined ? bData.lectureIndex : null;
+
+      // If both have stored indices, use them
+      if (aIndex !== null && bIndex !== null) {
+        return aIndex - bIndex;
+      }
+
+      // Fallback to name-based sorting for backward compatibility
       const aMatch = a.match(/^(\d+)[.\s:)-]+/);
       const bMatch = b.match(/^(\d+)[.\s:)-]+/);
-      
-      // If both have numeric prefixes, sort by number
+
       if (aMatch && bMatch) {
         return parseInt(aMatch[1]) - parseInt(bMatch[1]);
       }
-      
-      // If only one has numeric prefix, it goes first
       if (aMatch) return -1;
       if (bMatch) return 1;
-      
-      // Otherwise alphabetical
+
       return a.localeCompare(b);
     });
+  }
+
+  // Helper to get transcript from lecture data (handles both old and new format)
+  function getTranscript(lectureData) {
+    // New format: { sectionIndex, lectureIndex, transcript }
+    if (lectureData && lectureData.transcript !== undefined) {
+      return lectureData.transcript;
+    }
+    // Old format: transcript is the array directly
+    return lectureData;
   }
 
   function downloadAsFile(content, filename) {
