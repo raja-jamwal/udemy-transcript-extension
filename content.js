@@ -37,13 +37,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return true;
     }
 
-    console.log('Found Course ID from page data:', courseId);
+    // Get the hostname to support Udemy Business subdomains
+    const hostname = window.location.hostname;
+    console.log('Found Course ID from page data:', courseId, 'on host:', hostname);
 
     // Create progress panel and respond
     createProgressPanel();
     updateProgressPanel('Fetching course curriculum...');
-    
-    sendResponse({ success: true, courseId: courseId });
+
+    sendResponse({ success: true, courseId: courseId, hostname: hostname });
     
     return true; // Keep the message channel open for async response
   }

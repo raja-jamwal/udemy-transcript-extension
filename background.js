@@ -6,7 +6,8 @@ let recordingState = {
   transcriptData: {},
   errorCount: 0,
   maxErrors: 5,
-  lastError: null
+  lastError: null,
+  hostname: 'www.udemy.com' // Default hostname, updated for Business accounts
 };
 
 // Clear previous state on extension install/update
@@ -65,6 +66,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         if (response && response.success) {
             const courseId = response.courseId;
+            // Store hostname to support Udemy Business subdomains
+            recordingState.hostname = response.hostname || 'www.udemy.com';
+            console.log('Using hostname:', recordingState.hostname);
             // Start the new API-based process
             fetchCourseCurriculum(courseId)
                 .then(courseData => {
@@ -121,7 +125,7 @@ async function fetchCourseCurriculum(courseId) {
     let hasMore = true;
 
     while (hasMore) {
-        const apiUrl = `https://www.udemy.com/api-2.0/courses/${courseId}/subscriber-curriculum-items/?curriculum_types=chapter,lecture&page_size=${pageSize}&page=${page}&fields[lecture]=title,object_index,id&fields[chapter]=title,object_index`;
+        const apiUrl = `https://${recordingState.hostname}/api-2.0/courses/${courseId}/subscriber-curriculum-items/?curriculum_types=chapter,lecture&page_size=${pageSize}&page=${page}&fields[lecture]=title,object_index,id&fields[chapter]=title,object_index`;
         
         const response = await fetch(apiUrl, {
             headers: { 'Accept': 'application/json, text/plain, */*' }
@@ -235,7 +239,7 @@ async function processLectures(courseId, courseData) {
 
 // New function to fetch a single transcript
 async function fetchTranscriptForLecture(courseId, lectureId) {
-    const lectureApiUrl = `https://www.udemy.com/api-2.0/users/me/subscribed-courses/${courseId}/lectures/${lectureId}/?fields[asset]=captions`;
+    const lectureApiUrl = `https://${recordingState.hostname}/api-2.0/users/me/subscribed-courses/${courseId}/lectures/${lectureId}/?fields[asset]=captions`;
     
     const response = await fetch(lectureApiUrl, {
         headers: { 'Accept': 'application/json, text/plain, */*' }
