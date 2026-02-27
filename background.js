@@ -1,29 +1,40 @@
+importScripts('lib.js');
+
 // Initialize state
 let recordingState = {
   isRecording: false,
   courseTab: null,
+  courseId: null,
   courseData: null, // Will now store API response
   transcriptData: {},
   errorCount: 0,
   maxErrors: 5,
   lastError: null,
-  hostname: 'www.udemy.com' // Default hostname, updated for Business accounts
+  hostname: 'www.udemy.com', // Default hostname, updated for Business accounts
+  apiRecording: [],
+  apiSeq: 0
 };
 
-// Clear previous state on extension install/update
-chrome.runtime.onInstalled.addListener(() => {
-  chrome.storage.local.set({ transcriptData: {} });
-  console.log('Extension installed/updated: transcript data initialized');
-});
-
-// Load any existing transcript data on startup
-chrome.storage.local.get(['transcriptData'], (result) => {
-  if (result.transcriptData) {
-    recordingState.transcriptData = result.transcriptData;
-    console.log('Loaded existing transcript data:', Object.keys(result.transcriptData).length, 'sections');
-  } else {
-    console.log('No existing transcript data found');
+// Helper to record an API call
+function recordApiCall(type, url, status, response, lectureId) {
+  const entry = {
+    seq: recordingState.apiSeq++,
+    type: type,
+    url: url,
+    status: status,
+    response: response,
+    timestamp: new Date().toISOString()
+  };
+  if (lectureId !== undefined) {
+    entry.lectureId = lectureId;
   }
+  recordingState.apiRecording.push(entry);
+}
+
+// Migrate: remove old flat keys from previous versions
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.storage.local.remove(['transcriptData', 'apiRecording']);
+  console.log('Extension installed/updated: removed legacy flat storage keys');
 });
 
 // Listen for messages from popup or content scripts
@@ -50,11 +61,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
     }
     
-    // Set up recording state
+    // Set up recording state — clear previous transcript data to avoid cross-course contamination
     recordingState.isRecording = true;
     recordingState.courseTab = message.courseTab;
+    recordingState.transcriptData = {};
     recordingState.errorCount = 0;
     recordingState.lastError = null;
+    recordingState.apiRecording = [];
+    recordingState.apiSeq = 0;
     
     // Ask content script ONLY for the course ID
     chrome.tabs.sendMessage(recordingState.courseTab, { action: 'getCourseStructure' }, (response) => {
@@ -66,6 +80,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         if (response && response.success) {
             const courseId = response.courseId;
+            recordingState.courseId = courseId;
             // Store hostname to support Udemy Business subdomains
             recordingState.hostname = response.hostname || 'www.udemy.com';
             console.log('Using hostname:', recordingState.hostname);
@@ -108,10 +123,33 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
   
+  else if (message.action === 'getApiRecording') {
+    chrome.storage.local.get(null, (result) => {
+      const apiRecordings = {};
+      for (const key of Object.keys(result)) {
+        if (key.startsWith('apiRecording_')) {
+          apiRecordings[key] = result[key];
+        }
+      }
+      sendResponse({ success: true, data: apiRecordings });
+    });
+    return true;
+  }
+
   else if (message.action === 'clearTranscriptData') {
-    chrome.storage.local.set({ transcriptData: {} }, () => {
-      recordingState.transcriptData = {};
-      sendResponse({ success: true });
+    chrome.storage.local.get(null, (result) => {
+      const keysToRemove = Object.keys(result).filter(
+        key => key.startsWith('transcriptData_') || key.startsWith('apiRecording_')
+      );
+      if (keysToRemove.length > 0) {
+        chrome.storage.local.remove(keysToRemove, () => {
+          recordingState.transcriptData = {};
+          sendResponse({ success: true });
+        });
+      } else {
+        recordingState.transcriptData = {};
+        sendResponse({ success: true });
+      }
     });
     return true;
   }
@@ -132,51 +170,19 @@ async function fetchCourseCurriculum(courseId) {
         });
 
         if (!response.ok) {
+            recordApiCall('curriculum', apiUrl, response.status, null);
             throw new Error(`API request failed with status ${response.status}`);
         }
 
         const data = await response.json();
+        recordApiCall('curriculum', apiUrl, response.status, data);
         results = results.concat(data.results);
-        
+
         hasMore = !!data.next; // Check if there is a 'next' page URL
         page++;
     }
 
-    // Process the flat list into structured data
-    const courseData = { sections: [], lectures: [] };
-    let currentSection = { section: 'Course Introduction', sectionIndex: 0, lectures: [] };
-    let sectionIndex = 0;
-    let globalLectureIndex = 0;
-
-    results.sort((a, b) => a.object_index - b.object_index); // Ensure correct order
-
-    for (const item of results) {
-        if (item._class === 'chapter') {
-            // Save the previous section if it has lectures
-            if (currentSection.lectures.length > 0) {
-                courseData.sections.push(currentSection);
-            }
-            sectionIndex++;
-            currentSection = { section: item.title, sectionIndex: sectionIndex, lectures: [] };
-        } else if (item._class === 'lecture') {
-            const lectureInfo = {
-                id: item.id,
-                title: item.title,
-                section: currentSection.section,
-                sectionIndex: currentSection.sectionIndex,
-                lectureIndex: globalLectureIndex
-            };
-            globalLectureIndex++;
-            currentSection.lectures.push(lectureInfo);
-            courseData.lectures.push(lectureInfo);
-        }
-    }
-    // Add the last section
-    if (currentSection.lectures.length > 0) {
-        courseData.sections.push(currentSection);
-    }
-
-    return courseData;
+    return parseCurriculum(results);
 }
 
 // New main processing loop
@@ -203,7 +209,7 @@ async function processLectures(courseId, courseData) {
                 lectureIndex: lectureIndex,
                 transcript: transcript
             };
-            chrome.storage.local.set({ transcriptData: recordingState.transcriptData });
+            chrome.storage.local.set({ ['transcriptData_' + recordingState.courseId]: recordingState.transcriptData });
 
             processedCount++;
             console.log(`[${processedCount}/${totalLectures}] Successfully processed: ${title}`);
@@ -245,9 +251,13 @@ async function fetchTranscriptForLecture(courseId, lectureId) {
         headers: { 'Accept': 'application/json, text/plain, */*' }
     });
 
-    if (!response.ok) throw new Error(`Lecture API failed with status ${response.status}`);
-    
+    if (!response.ok) {
+        recordApiCall('captions', lectureApiUrl, response.status, null, lectureId);
+        throw new Error(`Lecture API failed with status ${response.status}`);
+    }
+
     const data = await response.json();
+    recordApiCall('captions', lectureApiUrl, response.status, data, lectureId);
     const captions = data?.asset?.captions;
 
     if (!captions || captions.length === 0) {
@@ -264,34 +274,14 @@ async function fetchTranscriptForLecture(courseId, lectureId) {
     }
 
     const vttResponse = await fetch(vttUrl);
-    if (!vttResponse.ok) throw new Error(`VTT fetch failed with status ${vttResponse.status}`);
-    
-    const vttText = await vttResponse.text();
-    return parseVtt(vttText);
-}
+    if (!vttResponse.ok) {
+        recordApiCall('vtt', vttUrl, vttResponse.status, null, lectureId);
+        throw new Error(`VTT fetch failed with status ${vttResponse.status}`);
+    }
 
-// New VTT parsing helper
-function parseVtt(vttContent) {
-    const lines = vttContent.split('\n');
-    const transcriptLines = [];
-    for (const line of lines) {
-        // Skip metadata lines
-        if (line.startsWith('WEBVTT') || line.includes('-->') || line.trim() === '') {
-            continue;
-        }
-        // Remove cue identifiers like <v Roger Bingham>
-        transcriptLines.push(line.replace(/<[^>]+>/g, '').trim());
-    }
-    // Join lines that might have been split and remove duplicates
-    const uniqueLines = [];
-    let previousLine = '';
-    for(const line of transcriptLines) {
-        if (line !== previousLine) {
-            uniqueLines.push(line);
-            previousLine = line;
-        }
-    }
-    return uniqueLines;
+    const vttText = await vttResponse.text();
+    recordApiCall('vtt', vttUrl, vttResponse.status, vttText, lectureId);
+    return parseVtt(vttText);
 }
 
 // Stop the recording process
@@ -311,9 +301,24 @@ function stopRecording(reason = 'user request') {
     });
   }
   
-  // Make sure the current progress is saved to storage
-  chrome.storage.local.set({ transcriptData: recordingState.transcriptData });
-  
+  // Build and save the API recording
+  const apiRecordingData = {
+    metadata: {
+      courseId: String(recordingState.courseId || 'unknown'),
+      hostname: recordingState.hostname,
+      timestamp: new Date().toISOString(),
+      totalLectures: recordingState.courseData?.lectures?.length || 0
+    },
+    requests: recordingState.apiRecording
+  };
+
+  // Make sure the current progress is saved to storage (scoped by courseId)
+  const courseId = recordingState.courseId || 'unknown';
+  chrome.storage.local.set({
+    ['transcriptData_' + courseId]: recordingState.transcriptData,
+    ['apiRecording_' + courseId]: apiRecordingData
+  });
+
   // Reset state but keep transcript data
   recordingState.courseTab = null;
   recordingState.courseData = null;
@@ -356,13 +361,25 @@ function finishRecording() {
     console.log(`- Missed sections: ${missedSections.join(', ')}`);
   }
   
-  // Save final state to storage
-  chrome.storage.local.set({ transcriptData: recordingState.transcriptData }, () => {
+  // Build the API recording payload
+  const apiRecordingData = {
+    metadata: {
+      courseId: String(recordingState.courseId || 'unknown'),
+      hostname: recordingState.hostname,
+      timestamp: new Date().toISOString(),
+      totalLectures: capturedCount
+    },
+    requests: recordingState.apiRecording
+  };
+
+  // Save final state to storage (scoped by courseId)
+  const courseId = recordingState.courseId || 'unknown';
+  chrome.storage.local.set({ ['transcriptData_' + courseId]: recordingState.transcriptData, ['apiRecording_' + courseId]: apiRecordingData }, () => {
     // Notify that recording is complete
     chrome.tabs.sendMessage(recordingState.courseTab, {
       action: 'recordingComplete'
     });
-    
+
     // Reset state but keep transcript data
     recordingState.courseTab = null;
     recordingState.courseData = null;

@@ -363,35 +363,56 @@ function getTranscript(lectureData) {
 
 // Download transcripts function
 function downloadTranscripts() {
-  chrome.storage.local.get(['transcriptData'], function(result) {
+  // Extract courseId from the page DOM
+  const appLoaderDiv = document.querySelector('div[data-module-id="course-taking"]');
+  let courseId = null;
+  if (appLoaderDiv) {
+    try {
+      const data = JSON.parse(appLoaderDiv.getAttribute('data-module-args'));
+      courseId = data.courseId;
+    } catch (e) {
+      // ignore parse errors
+    }
+  }
+
+  const storageKey = courseId ? 'transcriptData_' + courseId : null;
+  if (!storageKey) {
+    showNotification('Could not determine course ID from page.');
+    return;
+  }
+
+  chrome.storage.local.get([storageKey], function(result) {
     if (chrome.runtime.lastError) {
       showNotification('Error accessing transcript data: ' + chrome.runtime.lastError.message);
       return;
     }
 
-    if (result.transcriptData && Object.keys(result.transcriptData).length > 0) {
-      // Format transcript data
+    const transcriptData = result[storageKey];
+    if (transcriptData && Object.keys(transcriptData).length > 0) {
+      // Format transcript data with proper sorting
       let transcriptText = '';
-      for (const section in result.transcriptData) {
+      const orderedSections = sortSections(Object.keys(transcriptData), transcriptData);
+      for (const section of orderedSections) {
         transcriptText += `\n\n=== ${section} ===\n\n`;
-        for (const lecture in result.transcriptData[section]) {
+        const orderedLectures = sortLectures(Object.keys(transcriptData[section]), transcriptData[section]);
+        for (const lecture of orderedLectures) {
           transcriptText += `\n--- ${lecture} ---\n\n`;
-          const transcript = getTranscript(result.transcriptData[section][lecture]);
+          const transcript = getTranscript(transcriptData[section][lecture]);
           transcriptText += transcript.join('\n') + '\n';
         }
       }
-      
+
       // Create blob and download
       const blob = new Blob([transcriptText], { type: 'text/plain' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = 'udemy_transcript.txt';
+      a.download = `udemy_transcript_${courseId}.txt`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-      
+
       showNotification('Transcript download started!');
     } else {
       showNotification('No transcript data available to download.');

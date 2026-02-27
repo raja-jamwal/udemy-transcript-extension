@@ -11,6 +11,7 @@ mkdir -p "$TEMP_DIR"
 # Copy all necessary files
 echo "Copying files..."
 cp manifest.json "$TEMP_DIR/"
+cp lib.js "$TEMP_DIR/"
 cp content.js "$TEMP_DIR/"
 cp popup.html "$TEMP_DIR/"
 cp popup.js "$TEMP_DIR/"

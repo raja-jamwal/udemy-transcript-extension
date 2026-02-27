@@ -1,0 +1,27 @@
+{
+  "name": "udemy-transcript-extension",
+  "version": "1.0.0",
+  "description": "A Chrome extension that extracts and saves transcripts from Udemy courses.",
+  "main": "background.js",
+  "directories": {
+    "test": "test"
+  },
+  "scripts": {
+    "test": "jest"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/raja-jamwal/udemy-transcript-extension.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/raja-jamwal/udemy-transcript-extension/issues"
+  },
+  "homepage": "https://github.com/raja-jamwal/udemy-transcript-extension#readme",
+  "devDependencies": {
+    "jest": "^30.2.0"
+  }
+}
