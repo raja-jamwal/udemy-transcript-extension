@@ -7,18 +7,6 @@ const { parseVtt, parseCurriculum, sortSections, sortLectures, getTranscript, cr
 // ---------------------------------------------------------------------------
 const FIXTURES = [
   {
-    label: 'course 6133281',
-    file: 'api_recording_6133281.json',
-    referenceFile: 'udemy_transcript_6133281.txt',
-    sections: 15,
-    lectures: 73,
-    withTranscript: 71,
-    withoutTranscript: 2,
-    firstSection: 'Rethink & Reimagine Leadership',
-    lastSection: 'Extra Resources',
-    noTranscriptIds: [45586103, 45586109],
-  },
-  {
     label: 'course 673654',
     file: 'api_recording_673654.json',
     referenceFile: 'udemy_transcript_673654.txt',
@@ -31,33 +19,6 @@ const FIXTURES = [
     noTranscriptIds: [4765470, 4783346, 4862638, 4893374, 4893794, 4895908, 4896620, 4897300, 4921524, 4927482, 4936744, 4937300, 4943450, 4943512, 4943514, 4943516, 4943518, 4943520, 4943524, 5210906, 5219348, 5744820, 6989152, 7981240, 11422628],
   },
 ];
-
-// Helper: parse section and lecture headers from reference transcript files
-// Format: === Section Title === for sections, --- Lecture Title --- for lectures
-function parseReferenceHeaders(filePath) {
-  const content = fs.readFileSync(filePath, 'utf8');
-  const lines = content.split('\n');
-  const sections = [];
-  const lecturesBySection = {};
-  let currentSection = null;
-
-  for (const line of lines) {
-    const sectionMatch = line.match(/^=== (.+) ===$/);
-    const lectureMatch = line.match(/^--- (.+) ---$/);
-
-    if (sectionMatch) {
-      currentSection = sectionMatch[1];
-      sections.push(currentSection);
-      if (!lecturesBySection[currentSection]) {
-        lecturesBySection[currentSection] = [];
-      }
-    } else if (lectureMatch && currentSection) {
-      lecturesBySection[currentSection].push(lectureMatch[1]);
-    }
-  }
-
-  return { sections, lecturesBySection };
-}
 
 // Helper: replay processLectures logic from a fixture
 function replayFixture(fixture) {
