@@ -9,7 +9,18 @@ document.addEventListener('DOMContentLoaded', function() {
   const confirmNoBtn = document.getElementById('confirm-no');
   const mainControls = document.getElementById('main-controls');
   const statusDiv = document.getElementById('status');
-  
+  const languageSelect = document.getElementById('language-select');
+
+  // Load and persist the user's preferred caption locale
+  chrome.storage.local.get(['preferredLocale'], function(result) {
+    if (result.preferredLocale) {
+      languageSelect.value = result.preferredLocale;
+    }
+  });
+  languageSelect.addEventListener('change', function() {
+    chrome.storage.local.set({ preferredLocale: languageSelect.value });
+  });
+
   // Initialize the extension popup
   initializePopup();
 

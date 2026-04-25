@@ -1,5 +1,33 @@
 // Pure functions extracted from background.js and popup.js for testability.
 
+// Pick the best caption from a Udemy lecture's captions array based on user
+// preference. Returns the matched caption object (with `.url`, `.locale_id`,
+// etc.) or null if no acceptable match exists.
+//
+//   - preferredLocale falsy or 'auto' → English first (en_US, en_GB, en_*),
+//     else first available caption. Always returns something if captions exist.
+//   - preferredLocale set (e.g. 'es_ES') → exact match, then language-prefix
+//     match (e.g. 'pt_BR' falls back to 'pt_PT'), then null. We do not silently
+//     fall back across languages — the caller surfaces a clearer error.
+function pickCaption(captions, preferredLocale) {
+    if (!captions || captions.length === 0) return null;
+    const valid = captions.filter(c => c && typeof c.locale_id === 'string');
+    if (valid.length === 0) return null;
+
+    if (!preferredLocale || preferredLocale === 'auto') {
+        return valid.find(c => c.locale_id === 'en_US')
+            || valid.find(c => c.locale_id === 'en_GB')
+            || valid.find(c => c.locale_id.startsWith('en'))
+            || valid[0];
+    }
+
+    const exact = valid.find(c => c.locale_id === preferredLocale);
+    if (exact) return exact;
+
+    const lang = preferredLocale.split('_')[0];
+    return valid.find(c => c.locale_id.split('_')[0] === lang) || null;
+}
+
 // VTT parsing helper (from background.js)
 function parseVtt(vttContent) {
     const lines = vttContent.split('\n');
@@ -233,5 +261,5 @@ function formatTranscriptData(data, courseTitle) {
 
 // Dual-environment export for Node.js (tests) and browser (extension)
 if (typeof module !== 'undefined') {
-    module.exports = { parseVtt, parseCurriculum, sortSections, sortLectures, getTranscript, createAnchor, formatTranscriptData };
+    module.exports = { parseVtt, parseCurriculum, sortSections, sortLectures, getTranscript, createAnchor, formatTranscriptData, pickCaption };
 }

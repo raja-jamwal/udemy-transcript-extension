@@ -1,6 +1,6 @@
 const path = require('path');
 const fs = require('fs');
-const { parseVtt, parseCurriculum, sortSections, sortLectures, getTranscript, createAnchor, formatTranscriptData } = require('../lib');
+const { parseVtt, parseCurriculum, sortSections, sortLectures, getTranscript, createAnchor, formatTranscriptData, pickCaption } = require('../lib');
 
 // ---------------------------------------------------------------------------
 // Fixtures — each entry: [label, filename, expected counts]
@@ -21,7 +21,9 @@ const FIXTURES = [
 ];
 
 // Helper: replay processLectures logic from a fixture
-function replayFixture(fixture) {
+// Mirrors background.js fetchTranscriptForLecture() — uses pickCaption() so any
+// change to selection logic is automatically tested via the fixture replay.
+function replayFixture(fixture, preferredLocale) {
   const curriculumReq = fixture.requests.find(r => r.type === 'curriculum');
   const courseData = parseCurriculum(curriculumReq.response.results);
 
@@ -48,14 +50,20 @@ function replayFixture(fixture) {
       if (!captions || captions.length === 0) {
         transcript = ['[No transcript available for this lecture]'];
       } else {
-        const englishCaption = captions.find(c => c.locale_id === 'en_US')
-          || captions.find(c => c.locale_id === 'en_GB')
-          || captions.find(c => c.locale_id && c.locale_id.startsWith('en'));
-        if (!englishCaption) {
-          transcript = ['[No English transcript found for this lecture]'];
+        const picked = pickCaption(captions, preferredLocale);
+        if (!picked) {
+          const available = captions.map(c => c && c.locale_id).filter(Boolean).join(', ');
+          transcript = [`[No transcript available for locale "${preferredLocale}". Available: ${available || 'none'}]`];
         } else {
+          // The fixture only stored VTT bodies for captions actually fetched
+          // (the original recording grabbed English). For non-English locales
+          // we won't have a VTT body — the caption URL itself is what matters.
           const vttContent = vttByLecture[id];
-          transcript = vttContent ? parseVtt(vttContent) : ['[No transcript available for this lecture]'];
+          if (vttContent && (!preferredLocale || preferredLocale === 'auto' || picked.locale_id.startsWith('en'))) {
+            transcript = parseVtt(vttContent);
+          } else {
+            transcript = ['[VTT body not in fixture; URL would have been fetched: ' + picked.url + ']'];
+          }
         }
       }
     }
@@ -170,6 +178,77 @@ describe('createAnchor', () => {
 
   test('limits length to 50 characters', () => {
     expect(createAnchor('A'.repeat(100)).length).toBe(50);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// pickCaption (unit tests — fixture-independent)
+// ---------------------------------------------------------------------------
+describe('pickCaption', () => {
+  const captions = [
+    { locale_id: 'es_ES', url: 'http://x/es' },
+    { locale_id: 'en_US', url: 'http://x/en-us' },
+    { locale_id: 'en_GB', url: 'http://x/en-gb' },
+    { locale_id: 'pt_PT', url: 'http://x/pt-pt' },
+    { locale_id: 'de_DE', url: 'http://x/de' },
+  ];
+
+  test('returns null for empty/missing captions', () => {
+    expect(pickCaption([], 'en_US')).toBeNull();
+    expect(pickCaption(null, 'en_US')).toBeNull();
+    expect(pickCaption(undefined)).toBeNull();
+  });
+
+  test('auto mode prefers en_US over en_GB over other en variants', () => {
+    expect(pickCaption(captions, 'auto').locale_id).toBe('en_US');
+    expect(pickCaption([
+      { locale_id: 'en_GB', url: 'http://x/en-gb' },
+      { locale_id: 'en_AU', url: 'http://x/en-au' },
+    ], 'auto').locale_id).toBe('en_GB');
+    expect(pickCaption([
+      { locale_id: 'en_AU', url: 'http://x/en-au' },
+      { locale_id: 'es_ES', url: 'http://x/es' },
+    ], 'auto').locale_id).toBe('en_AU');
+  });
+
+  test('auto mode falls back to first caption when no English available', () => {
+    const noEn = [
+      { locale_id: 'es_ES', url: 'http://x/es' },
+      { locale_id: 'fr_FR', url: 'http://x/fr' },
+    ];
+    expect(pickCaption(noEn, 'auto').locale_id).toBe('es_ES');
+    expect(pickCaption(noEn).locale_id).toBe('es_ES'); // undefined preferredLocale
+    expect(pickCaption(noEn, null).locale_id).toBe('es_ES');
+  });
+
+  test('explicit locale picks exact match', () => {
+    expect(pickCaption(captions, 'es_ES').locale_id).toBe('es_ES');
+    expect(pickCaption(captions, 'de_DE').locale_id).toBe('de_DE');
+  });
+
+  test('explicit locale falls back to language-prefix match', () => {
+    expect(pickCaption(captions, 'pt_BR').locale_id).toBe('pt_PT');
+    expect(pickCaption(captions, 'en_AU').locale_id).toBe('en_US');
+  });
+
+  test('explicit locale returns null when no language match (no silent cross-language fallback)', () => {
+    expect(pickCaption(captions, 'ja_JP')).toBeNull();
+    expect(pickCaption(captions, 'ko_KR')).toBeNull();
+  });
+
+  test('skips captions with missing or non-string locale_id', () => {
+    const messy = [
+      { url: 'http://x/no-locale' },
+      { locale_id: null, url: 'http://x/null' },
+      { locale_id: 42, url: 'http://x/numeric' },
+      { locale_id: 'en_US', url: 'http://x/en' },
+    ];
+    expect(pickCaption(messy, 'auto').locale_id).toBe('en_US');
+    expect(pickCaption(messy, 'en_US').locale_id).toBe('en_US');
+  });
+
+  test('returns null when every caption has invalid locale_id', () => {
+    expect(pickCaption([{ url: 'http://x/no-locale' }], 'auto')).toBeNull();
   });
 });
 
@@ -329,6 +408,100 @@ describe.each(FIXTURES)('$label', (cfg) => {
       const sectionHeaders = [...output.matchAll(/^## (.+?) \{#/gm)].map(m => m[1]);
       const expectedSections = courseData.sections.map(s => s.section);
       expect(sectionHeaders).toEqual(expectedSections);
+    });
+  });
+
+  // -- Locale selection against real recorded captions --
+  describe('locale selection against recorded caption inventory', () => {
+    let captionsByLecture;
+
+    beforeAll(() => {
+      captionsByLecture = {};
+      for (const req of fixture.requests) {
+        if (req.type === 'captions') captionsByLecture[req.lectureId] = req.response;
+      }
+    });
+
+    test('every lecture with non-empty captions yields an es_ES URL when Spanish requested', () => {
+      let withCaptions = 0, pickedSpanish = 0;
+      for (const lecture of courseData.lectures) {
+        const cd = captionsByLecture[lecture.id];
+        const caps = cd && cd.asset && cd.asset.captions;
+        if (!caps || caps.length === 0) continue;
+        withCaptions++;
+        const picked = pickCaption(caps, 'es_ES');
+        if (picked && picked.locale_id === 'es_ES' && picked.url.includes('/es_ES/')) {
+          pickedSpanish++;
+        }
+      }
+      expect(withCaptions).toBeGreaterThan(0);
+      expect(pickedSpanish).toBe(withCaptions);
+    });
+
+    test('explicit pt_BR picks pt_BR exactly (no silent fallback to en)', () => {
+      for (const lecture of courseData.lectures) {
+        const cd = captionsByLecture[lecture.id];
+        const caps = cd && cd.asset && cd.asset.captions;
+        if (!caps || caps.length === 0) continue;
+        const picked = pickCaption(caps, 'pt_BR');
+        if (picked) {
+          expect(picked.locale_id.startsWith('pt')).toBe(true);
+        }
+      }
+    });
+
+    test('explicit unsupported locale (xx_XX) returns null for caption-bearing lectures', () => {
+      let nullResults = 0, withCaptions = 0;
+      for (const lecture of courseData.lectures) {
+        const cd = captionsByLecture[lecture.id];
+        const caps = cd && cd.asset && cd.asset.captions;
+        if (!caps || caps.length === 0) continue;
+        withCaptions++;
+        if (pickCaption(caps, 'xx_XX') === null) nullResults++;
+      }
+      expect(nullResults).toBe(withCaptions);
+    });
+
+    test('auto mode picks English on this English-source course (preserves legacy behavior)', () => {
+      for (const lecture of courseData.lectures) {
+        const cd = captionsByLecture[lecture.id];
+        const caps = cd && cd.asset && cd.asset.captions;
+        if (!caps || caps.length === 0) continue;
+        const picked = pickCaption(caps, 'auto');
+        expect(picked).not.toBeNull();
+        expect(picked.locale_id.startsWith('en')).toBe(true);
+      }
+    });
+
+    test('full replay with preferredLocale=es_ES produces same section/lecture counts and Spanish URLs in markers', () => {
+      const { transcriptData: tdEs } = replayFixture(fixture, 'es_ES');
+      expect(Object.keys(tdEs).length).toBe(cfg.sections);
+
+      let total = 0, spanishUrlMarkers = 0;
+      for (const section in tdEs) {
+        for (const lecture in tdEs[section]) {
+          total++;
+          const t = tdEs[section][lecture].transcript;
+          if (t.length === 1 && t[0].includes('/es_ES/')) spanishUrlMarkers++;
+        }
+      }
+      expect(total).toBe(cfg.lectures);
+      // Spanish marker appears for every caption-bearing lecture (= total - withoutTranscript)
+      expect(spanishUrlMarkers).toBe(cfg.withTranscript);
+    });
+
+    test('full replay with unsupported locale produces no-transcript markers including the available list', () => {
+      const { transcriptData: tdXx } = replayFixture(fixture, 'xx_XX');
+      let unsupportedMarkers = 0;
+      for (const section in tdXx) {
+        for (const lecture in tdXx[section]) {
+          const t = tdXx[section][lecture].transcript;
+          if (t.length === 1 && t[0].includes('locale "xx_XX"') && t[0].includes('Available:')) {
+            unsupportedMarkers++;
+          }
+        }
+      }
+      expect(unsupportedMarkers).toBe(cfg.withTranscript);
     });
   });
 

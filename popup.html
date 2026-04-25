@@ -130,6 +130,30 @@
       font-size: 12px;
       color: #757575;
     }
+    .language-selector {
+      margin-bottom: 15px;
+    }
+    .language-selector label {
+      display: block;
+      font-size: 13px;
+      color: #333;
+      margin-bottom: 5px;
+      font-weight: bold;
+    }
+    .language-selector select {
+      width: 100%;
+      padding: 8px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      font-size: 14px;
+      background-color: white;
+      cursor: pointer;
+    }
+    .language-selector .hint {
+      font-size: 11px;
+      color: #757575;
+      margin-top: 4px;
+    }
   </style>
   <script src="lib.js"></script>
   <script src="popup.js"></script>
@@ -155,6 +179,31 @@
     </div>
   </div>
   
+  <!-- Language Selector -->
+  <div class="language-selector">
+    <label for="language-select">Transcript language</label>
+    <select id="language-select">
+      <option value="auto">Auto (English preferred, else course default)</option>
+      <option value="en_US">English (US)</option>
+      <option value="en_GB">English (UK)</option>
+      <option value="es_ES">Spanish</option>
+      <option value="pt_BR">Portuguese (Brazil)</option>
+      <option value="fr_FR">French</option>
+      <option value="de_DE">German</option>
+      <option value="it_IT">Italian</option>
+      <option value="nl_NL">Dutch</option>
+      <option value="pl_PL">Polish</option>
+      <option value="ru_RU">Russian</option>
+      <option value="tr_TR">Turkish</option>
+      <option value="ar_AR">Arabic</option>
+      <option value="hi_IN">Hindi</option>
+      <option value="ja_JP">Japanese</option>
+      <option value="ko_KR">Korean</option>
+      <option value="zh_CN">Chinese (Simplified)</option>
+    </select>
+    <div class="hint">Choose before starting a recording. Saved across sessions.</div>
+  </div>
+
   <!-- Main Controls -->
   <div id="main-controls">
     <button id="start-recording">Record Course Transcripts</button>

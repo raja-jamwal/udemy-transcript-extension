@@ -11,6 +11,7 @@ let recordingState = {
   maxErrors: 5,
   lastError: null,
   hostname: 'www.udemy.com', // Default hostname, updated for Business accounts
+  preferredLocale: 'auto',
   apiRecording: [],
   apiSeq: 0
 };
@@ -70,6 +71,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     recordingState.apiRecording = [];
     recordingState.apiSeq = 0;
     
+    // Load user's preferred caption locale before kicking off the recording
+    chrome.storage.local.get(['preferredLocale'], (prefResult) => {
+      recordingState.preferredLocale = prefResult.preferredLocale || 'auto';
+      console.log('Using preferredLocale:', recordingState.preferredLocale);
+
     // Ask content script ONLY for the course ID
     chrome.tabs.sendMessage(recordingState.courseTab, { action: 'getCourseStructure' }, (response) => {
         if (chrome.runtime.lastError) {
@@ -103,7 +109,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             sendResponse({ success: false, error });
         }
     });
-    
+    }); // end chrome.storage.local.get(preferredLocale)
+
     return true; // Keep the message channel open for async response
   }
   
@@ -264,15 +271,14 @@ async function fetchTranscriptForLecture(courseId, lectureId) {
         return ['[No transcript available for this lecture]'];
     }
 
-    // Find the English caption URL
-    let vttUrl = captions.find(c => c.locale_id === 'en_US')?.url
-              || captions.find(c => c.locale_id === 'en_GB')?.url
-              || captions.find(c => c.locale_id.startsWith('en'))?.url;
+    const picked = pickCaption(captions, recordingState.preferredLocale);
 
-    if (!vttUrl) {
-        return ['[No English transcript found for this lecture]'];
+    if (!picked) {
+        const available = captions.map(c => c && c.locale_id).filter(Boolean).join(', ');
+        return [`[No transcript available for locale "${recordingState.preferredLocale}". Available: ${available || 'none'}]`];
     }
 
+    const vttUrl = picked.url;
     const vttResponse = await fetch(vttUrl);
     if (!vttResponse.ok) {
         recordApiCall('vtt', vttUrl, vttResponse.status, null, lectureId);
