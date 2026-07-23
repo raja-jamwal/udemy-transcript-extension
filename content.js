@@ -266,7 +266,7 @@ function createProgressPanel() {
   attribution.style.fontSize = '10px';
   attribution.style.color = '#757575';
   attribution.style.marginTop = '10px';
-  attribution.innerHTML = '<a href="https://www.mypromind.com" target="_blank" style="color: #757575; text-decoration: none;">Brought to you by MyProMind.com</a>';
+  attribution.innerHTML = 'Made by Raja Jamwal &middot; <a href="https://www.linkedin.com/in/rajajamwal/" target="_blank" style="color: #757575; text-decoration: none;">LinkedIn</a> &middot; <a href="https://www.youtube.com/@raja.jamwal" target="_blank" style="color: #757575; text-decoration: none;">YouTube</a>';
   content.appendChild(attribution);
   
   progressPanel.appendChild(header);
